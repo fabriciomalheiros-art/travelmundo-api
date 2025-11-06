@@ -1,0 +1,19 @@
+{
+  "name": "travelmundo-api",
+  "version": "1.0.0",
+  "description": "API de controle de créditos e integração Hotmart para o ecossistema TravelMundo IA.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "deploy": "gcloud run deploy travelmundo-api --source . --allow-unauthenticated --region=us-west1"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.3.1",
+    "firebase-admin": "^12.0.0"
+  }
+}
