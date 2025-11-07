@@ -1,4 +1,4 @@
-# ===============================
+# =============================== 
 # 🌍 TravelMundo IA - CI/CD Cloud Build
 # Deploy automático no Cloud Run (us-west1)
 # ===============================
@@ -9,6 +9,7 @@ steps:
     args: ['install']
 
   # 🧪 2. Executa testes (opcional)
+  # Descomente se quiser validar antes de buildar
   # - name: 'gcr.io/cloud-builders/npm'
   #   args: ['run', 'test']
 
@@ -56,11 +57,21 @@ steps:
 # 🔐 Permissões & Configurações
 # ===============================
 
+# Usa a conta de serviço dedicada
 serviceAccount: 'travelmundo-api-sa@gen-lang-client-0394942372.iam.gserviceaccount.com'
 
+# Define o tempo máximo de execução
 timeout: 900s  # 15 minutos
 
+# Define as substituições de variáveis padrão (opcional)
 substitutions:
   _REGION: us-west1
   _SERVICE_NAME: portal-travelmundo-ia
   _IMAGE_NAME: travelmundo-api
+
+# ===============================
+# 🪣 Configuração de logs
+# ===============================
+
+options:
+  logging: CLOUD_LOGGING_ONLY
