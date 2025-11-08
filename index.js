@@ -14,6 +14,16 @@ app.get("/ping", (req, res) => {
   res.json({ message: "TravelMundo API online ✅" });
 });
 
+// API status route
+app.get("/status", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    version: "1.0.0",
+    environment: process.env.NODE_ENV || "production",
+    message: "🌍 TravelMundo API rodando com sucesso!"
+  });
+});
+
 // Mock endpoints (example structure)
 app.get("/credits", (req, res) => {
   const email = req.query.email;
