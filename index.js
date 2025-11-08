@@ -54,6 +54,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal Server Error", details: err.message });
 });
 
+app.get("/", (req, res) => {
+  res.send("🚀 Bem-vindo à TravelMundo API — tudo está rodando perfeitamente!");
+});
+
 // Start server
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 TravelMundo API running on port ${PORT}`));
