@@ -46,19 +46,19 @@ app.get("/status", (req, res) => {
   });
 });
 
-// ✅ Testa a conexão com o Firebase (rota única, sem duplicação)
+// ✅ Testa a conexão com o Firebase
 app.get("/test-firebase", async (req, res) => {
   if (!db) return res.status(500).json({ error: "Firebase não está configurado localmente." });
 
   try {
-    // escreve/atualiza um doc de saúde
+    // Escreve/atualiza um doc de saúde
     const ref = db.collection("health").doc("check");
     await ref.set(
       { ping: "pong", at: admin.firestore.FieldValue.serverTimestamp() },
       { merge: true }
     );
 
-    // lê de volta
+    // Lê de volta
     const snap = await ref.get();
     return res.status(200).json({ ok: true, data: snap.data() });
   } catch (err) {
@@ -67,28 +67,108 @@ app.get("/test-firebase", async (req, res) => {
   }
 });
 
-// ✅ Endpoints atuais
-app.get("/credits", (req, res) => {
-  const email = req.query.email;
-  if (!email) return res.status(400).json({ error: "Email required" });
-  res.json({ email, credits: 3, plan: "free" });
+// ✅ Registro de usuário no Firestore
+app.post("/register", async (req, res) => {
+  try {
+    const { email, name } = req.body;
+    if (!email || !name) return res.status(400).json({ error: "Email e nome são obrigatórios." });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+
+    if (userSnap.exists) {
+      return res.status(200).json({
+        success: true,
+        message: "Usuário já cadastrado.",
+        user: userSnap.data()
+      });
+    }
+
+    // Créditos iniciais padrão
+    const userData = {
+      name,
+      email,
+      credits: 10,
+      createdAt: new Date().toISOString()
+    };
+
+    await userRef.set(userData);
+
+    res.status(201).json({
+      success: true,
+      message: "Usuário cadastrado com sucesso!",
+      user: userData
+    });
+  } catch (err) {
+    console.error("❌ Erro no registro:", err);
+    res.status(500).json({ error: "Falha ao registrar usuário.", details: err.message });
+  }
 });
 
-app.post("/register", (req, res) => {
-  const { email, name } = req.body;
-  if (!email || !name) return res.status(400).json({ error: "Email and name required" });
-  res.json({ success: true, message: "User registered", credits: 3 });
+// ✅ Consulta de créditos do usuário
+app.get("/credits", async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) return res.status(400).json({ error: "Email obrigatório." });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    const userData = userSnap.data();
+    res.json({ email, credits: userData.credits, plan: "default", user: userData });
+  } catch (err) {
+    console.error("❌ Erro ao buscar créditos:", err);
+    res.status(500).json({ error: "Erro ao consultar créditos.", details: err.message });
+  }
 });
 
-app.post("/deduct", (req, res) => {
-  const { email, module } = req.body;
-  if (!email) return res.status(400).json({ error: "Email required" });
-  res.json({ success: true, message: "1 credit deducted", module });
+// ✅ Deduz um crédito ao usar a IA
+app.post("/deduct", async (req, res) => {
+  try {
+    const { email, module } = req.body;
+    if (!email) return res.status(400).json({ error: "Email obrigatório." });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    const userData = userSnap.data();
+    if (userData.credits <= 0) {
+      return res.status(403).json({ error: "Créditos insuficientes." });
+    }
+
+    // Deduz 1 crédito e registra uso
+    await userRef.update({
+      credits: userData.credits - 1,
+      lastUse: new Date().toISOString(),
+      lastModule: module || "unknown"
+    });
+
+    res.json({
+      success: true,
+      message: "1 crédito deduzido com sucesso.",
+      remainingCredits: userData.credits - 1
+    });
+  } catch (err) {
+    console.error("❌ Erro ao deduzir crédito:", err);
+    res.status(500).json({ error: "Falha ao deduzir crédito.", details: err.message });
+  }
 });
 
+// ✅ Webhook Hotmart (placeholder)
 app.post("/webhook", (req, res) => {
-  console.log("🔔 Hotmart webhook received:", req.body);
-  res.json({ success: true, message: "Webhook processed" });
+  console.log("🔔 Hotmart webhook recebido:", req.body);
+  res.json({ success: true, message: "Webhook processado com sucesso!" });
 });
 
 // ✅ Global error handler
