@@ -48,5 +48,10 @@ docker-compose.override.yml
 *.tmp
 *.old
 
+# Firebase key
+serviceAccountKey.json
+*.key.json
+*.env
+
 # GitHub Desktop / Windows line endings cache
 *~
