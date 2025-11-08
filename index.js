@@ -20,7 +20,7 @@ app.get("/status", (req, res) => {
     status: "ok",
     version: "1.0.0",
     environment: process.env.NODE_ENV || "production",
-    message: "🌍 TravelMundo API rodando com sucesso! 🚀🚀🚀"
+    message: "🌍 TravelMundo API rodando com sucesso! 🚀🚀🚀🚀"
   });
 });
 
