@@ -4,32 +4,39 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
-import path from "path";
 
-// 🔐 Carrega variáveis de ambiente
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// 🔥 Inicialização segura do Firebase
-const serviceAccountPath = path.resolve("serviceAccountKey.json");
-
-if (!admin.apps.length && fs.existsSync(serviceAccountPath)) {
+// 🔥 Inicialização Firebase
+const serviceAccountPath = "./serviceAccountKey.json";
+if (fs.existsSync(serviceAccountPath)) {
   const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(serviceAccount)
   });
-
   console.log("🔥 Firebase conectado com sucesso!");
 } else {
   console.warn("⚠️ Arquivo serviceAccountKey.json não encontrado — Firebase não inicializado.");
 }
-
-// Instância do Firestore
 const db = admin.apps.length ? admin.firestore() : null;
+
+// ✅ Função auxiliar: verifica expiração de plano
+async function checkPlanExpiration(userRef) {
+  const userSnap = await userRef.get();
+  const data = userSnap.data();
+  if (data.planExpiresAt && new Date(data.planExpiresAt) < new Date()) {
+    await userRef.update({
+      plan: "free",
+      planExpiresAt: null
+    });
+    console.log(`⏳ Plano expirado para ${data.email}, rebaixado para Free`);
+    return { ...data, plan: "free", planExpiresAt: null };
+  }
+  return data;
+}
 
 // ✅ Health check
 app.get("/ping", (req, res) => {
@@ -40,39 +47,45 @@ app.get("/ping", (req, res) => {
 app.get("/status", (req, res) => {
   res.status(200).json({
     status: "ok",
-    version: "1.0.0",
+    version: "2.1.0",
     environment: process.env.NODE_ENV || "production",
-    message: "🌍 TravelMundo API rodando com sucesso! 🚀🚀🚀🚀"
+    message: "🌍 TravelMundo API v2.1 rodando com sucesso! 🚀"
   });
 });
 
-// ✅ Testa a conexão com o Firebase
+// ✅ Testar conexão com Firebase Firestore
 app.get("/test-firebase", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firebase não está configurado localmente." });
-
   try {
-    // Escreve/atualiza um doc de saúde
-    const ref = db.collection("health").doc("check");
-    await ref.set(
-      { ping: "pong", at: admin.firestore.FieldValue.serverTimestamp() },
-      { merge: true }
-    );
+    if (!db) {
+      return res.status(500).json({ success: false, message: "Firebase não configurado" });
+    }
 
-    // Lê de volta
-    const snap = await ref.get();
-    return res.status(200).json({ ok: true, data: snap.data() });
-  } catch (err) {
-    console.error("🔥 Firebase test error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
+    const testRef = db.collection("test").doc("connection");
+    await testRef.set({ timestamp: new Date().toISOString() });
+
+    const doc = await testRef.get();
+    if (!doc.exists) {
+      return res.status(404).json({ success: false, message: "Documento não encontrado" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Conexão com Firestore estabelecida com sucesso!",
+      data: doc.data()
+    });
+  } catch (error) {
+    console.error("Erro ao testar conexão com Firebase:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ✅ Registro de usuário no Firestore
+
+// ✅ Registrar novo usuário
 app.post("/register", async (req, res) => {
   try {
     const { email, name } = req.body;
-    if (!email || !name) return res.status(400).json({ error: "Email e nome são obrigatórios." });
-    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+    if (!email || !name) return res.status(400).json({ error: "Email e nome obrigatórios" });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado" });
 
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
@@ -80,108 +93,196 @@ app.post("/register", async (req, res) => {
     if (userSnap.exists) {
       return res.status(200).json({
         success: true,
-        message: "Usuário já cadastrado.",
+        message: "Usuário já cadastrado",
         user: userSnap.data()
       });
     }
 
-    // Créditos iniciais padrão
     const userData = {
       name,
       email,
       credits: 10,
-      createdAt: new Date().toISOString()
+      plan: "free",
+      createdAt: new Date().toISOString(),
+      lastUpdate: new Date().toISOString(),
+      planExpiresAt: null
     };
 
     await userRef.set(userData);
-
     res.status(201).json({
       success: true,
       message: "Usuário cadastrado com sucesso!",
       user: userData
     });
-  } catch (err) {
-    console.error("❌ Erro no registro:", err);
-    res.status(500).json({ error: "Falha ao registrar usuário.", details: err.message });
+  } catch (error) {
+    console.error("Erro ao registrar usuário:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ Consulta de créditos do usuário
+// ✅ Consultar créditos
 app.get("/credits", async (req, res) => {
   try {
-    const email = req.query.email;
-    if (!email) return res.status(400).json({ error: "Email obrigatório." });
-    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: "Email obrigatório" });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado" });
 
     const userRef = db.collection("users").doc(email);
-    const userSnap = await userRef.get();
+    const userData = await checkPlanExpiration(userRef);
 
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
-    }
-
-    const userData = userSnap.data();
-    res.json({ email, credits: userData.credits, plan: "default", user: userData });
-  } catch (err) {
-    console.error("❌ Erro ao buscar créditos:", err);
-    res.status(500).json({ error: "Erro ao consultar créditos.", details: err.message });
+    if (!userData) return res.status(404).json({ error: "Usuário não encontrado" });
+    res.status(200).json(userData);
+  } catch (error) {
+    console.error("Erro ao consultar créditos:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ Deduz um crédito ao usar a IA
+// ✅ Deduzir 1 crédito
 app.post("/deduct", async (req, res) => {
   try {
     const { email, module } = req.body;
-    if (!email) return res.status(400).json({ error: "Email obrigatório." });
-    if (!db) return res.status(500).json({ error: "Firebase não configurado." });
+    if (!email) return res.status(400).json({ error: "Email obrigatório" });
+    if (!db) return res.status(500).json({ error: "Firebase não configurado" });
 
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
 
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
-    }
+    const userData = await checkPlanExpiration(userRef);
+    if (userData.credits <= 0) return res.status(400).json({ error: "Créditos insuficientes" });
 
-    const userData = userSnap.data();
-    if (userData.credits <= 0) {
-      return res.status(403).json({ error: "Créditos insuficientes." });
-    }
-
-    // Deduz 1 crédito e registra uso
     await userRef.update({
       credits: userData.credits - 1,
-      lastUse: new Date().toISOString(),
-      lastModule: module || "unknown"
+      lastUpdate: new Date().toISOString()
     });
 
-    res.json({
+    res.status(200).json({
       success: true,
-      message: "1 crédito deduzido com sucesso.",
-      remainingCredits: userData.credits - 1
+      message: "1 crédito deduzido com sucesso",
+      remainingCredits: userData.credits - 1,
+      module
     });
-  } catch (err) {
-    console.error("❌ Erro ao deduzir crédito:", err);
-    res.status(500).json({ error: "Falha ao deduzir crédito.", details: err.message });
+  } catch (error) {
+    console.error("Erro ao deduzir crédito:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ Webhook Hotmart (placeholder)
-app.post("/webhook", (req, res) => {
-  console.log("🔔 Hotmart webhook recebido:", req.body);
-  res.json({ success: true, message: "Webhook processado com sucesso!" });
+// ✅ Adicionar créditos manualmente
+app.post("/add-credits", async (req, res) => {
+  try {
+    const { email, amount } = req.body;
+    if (!email || !amount) return res.status(400).json({ error: "Email e quantidade obrigatórios" });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    const userData = userSnap.data();
+    const newCredits = userData.credits + Number(amount);
+
+    await userRef.update({
+      credits: newCredits,
+      lastUpdate: new Date().toISOString()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `${amount} créditos adicionados`,
+      totalCredits: newCredits
+    });
+  } catch (error) {
+    console.error("Erro ao adicionar créditos:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// ✅ Global error handler
-app.use((err, req, res, next) => {
-  console.error("❌ API Error:", err);
-  res.status(500).json({ error: "Internal Server Error", details: err.message });
+// ✅ Atualizar plano
+app.post("/upgrade-plan", async (req, res) => {
+  try {
+    const { email, plan } = req.body;
+    if (!email || !plan) return res.status(400).json({ error: "Email e plano obrigatórios" });
+
+    const plans = {
+      free: { credits: 10, duration: 0 },
+      pro: { credits: 50, duration: 30 },
+      premium: { credits: 200, duration: 30 }
+    };
+    if (!plans[plan]) return res.status(400).json({ error: "Plano inválido" });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    const expiresAt = plans[plan].duration
+      ? new Date(Date.now() + plans[plan].duration * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+
+    await userRef.update({
+      plan,
+      credits: plans[plan].credits,
+      planExpiresAt: expiresAt,
+      lastUpdate: new Date().toISOString()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Plano atualizado para ${plan.toUpperCase()}`,
+      plan,
+      expiresAt
+    });
+  } catch (error) {
+    console.error("Erro ao atualizar plano:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// ✅ Rota raiz
-app.get("/", (req, res) => {
-  res.send("🚀 Bem-vindo à TravelMundo API — tudo está rodando perfeitamente!");
+// ✅ Webhook Hotmart (simulado)
+app.post("/webhook", async (req, res) => {
+  try {
+    const { event, email, amount } = req.body;
+    if (!event || !email) return res.status(400).json({ error: "Evento e email obrigatórios" });
+
+    const userRef = db.collection("users").doc(email);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    switch (event) {
+      case "PURCHASE_APPROVED":
+        await userRef.update({
+          plan: "pro",
+          credits: admin.firestore.FieldValue.increment(amount || 50),
+          planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        });
+        return res.json({ success: true, message: "Compra processada. Plano PRO ativado." });
+      case "REFUND":
+      case "SUBSCRIPTION_CANCELED":
+        await userRef.update({ plan: "free", planExpiresAt: null });
+        return res.json({ success: true, message: "Plano cancelado, revertido para Free." });
+      default:
+        return res.json({ success: false, message: `Evento ignorado: ${event}` });
+    }
+  } catch (error) {
+    console.error("Erro no webhook:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// ✅ Inicializa o servidor
+// ✅ Listar módulos ativos
+app.get("/modules", (req, res) => {
+  res.json({
+    modules: [
+      { name: "TravelMundo IA", creditsPerUse: 1 },
+      { name: "StyleMundo IA", creditsPerUse: 1 },
+      { name: "SportMundo IA", creditsPerUse: 1 },
+      { name: "LifeMundo IA", creditsPerUse: 1 }
+    ]
+  });
+});
+
+// ✅ Inicializa servidor
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 TravelMundo API running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 TravelMundo API v2.1 running on port ${PORT}`)
+);
