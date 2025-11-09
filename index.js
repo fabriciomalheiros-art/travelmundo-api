@@ -238,36 +238,88 @@ app.post("/upgrade-plan", async (req, res) => {
   }
 });
 
-// ✅ Webhook Hotmart (simulado)
+// ✅ Webhook Hotmart (real)
+import crypto from "crypto";
+
 app.post("/webhook", async (req, res) => {
   try {
-    const { event, email, amount } = req.body;
-    if (!event || !email) return res.status(400).json({ error: "Evento e email obrigatórios" });
+    const signature = req.headers["x-hotmart-hottok"];
+    const secret = process.env.HOTMART_SECRET || "default_secret";
+
+    // Verifica assinatura
+    if (signature !== secret) {
+      return res.status(401).json({ error: "Assinatura inválida" });
+    }
+
+    const event = req.body.event;
+    const email = req.body.data?.buyer?.email || req.body.data?.buyer_email;
+
+    if (!email || !event)
+      return res.status(400).json({ error: "Evento ou e-mail ausente" });
 
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
-    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    if (!userSnap.exists)
+      return res.status(404).json({ error: "Usuário não encontrado" });
+
+    const userData = userSnap.data();
 
     switch (event) {
       case "PURCHASE_APPROVED":
+      case "purchase.approved":
         await userRef.update({
           plan: "pro",
-          credits: admin.firestore.FieldValue.increment(amount || 50),
-          planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+          credits: userData.credits + 50,
+          planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          lastUpdate: new Date().toISOString(),
         });
-        return res.json({ success: true, message: "Compra processada. Plano PRO ativado." });
+        await db.collection("transactions").add({
+          email,
+          type: "credit",
+          amount: 50,
+          event,
+          timestamp: new Date().toISOString(),
+        });
+        return res.json({ success: true, message: "Compra processada — plano PRO ativado." });
+
       case "REFUND":
+      case "refund":
+        await userRef.update({
+          plan: "free",
+          planExpiresAt: null,
+        });
+        await db.collection("transactions").add({
+          email,
+          type: "refund",
+          event,
+          timestamp: new Date().toISOString(),
+        });
+        return res.json({ success: true, message: "Reembolso processado — plano revertido." });
+
       case "SUBSCRIPTION_CANCELED":
-        await userRef.update({ plan: "free", planExpiresAt: null });
-        return res.json({ success: true, message: "Plano cancelado, revertido para Free." });
+      case "subscription_canceled":
+        await userRef.update({
+          plan: "free",
+          planExpiresAt: null,
+        });
+        await db.collection("transactions").add({
+          email,
+          type: "canceled",
+          event,
+          timestamp: new Date().toISOString(),
+        });
+        return res.json({ success: true, message: "Assinatura cancelada — plano FREE ativado." });
+
       default:
         return res.json({ success: false, message: `Evento ignorado: ${event}` });
     }
   } catch (error) {
-    console.error("Erro no webhook:", error);
+    console.error("Erro no Webhook Hotmart:", error);
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // ✅ Listar módulos ativos
 app.get("/modules", (req, res) => {
