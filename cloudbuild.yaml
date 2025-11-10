@@ -1,32 +1,28 @@
 # ============================================================
-# 🌍 TravelMundo IA - Cloud Build (v3.1.4)
-# Deploy automático no Cloud Run (us-west1)
-# Compatível com Gatilhos e Execuções Manuais ✅
+# 🌍 TravelMundo IA - Cloud Build (v3.1.7)
+# 🔧 Deploy automatizado com variáveis e secret persistentes
 # ============================================================
 
 substitutions:
   _SERVICE_NAME: "travelmundo-api"
   _REGION: "us-west1"
-  _VERSION: "3.1.4"
 
 steps:
   # 🧩 1️⃣ Instalar dependências
   - name: "gcr.io/cloud-builders/npm"
     args: ["install"]
 
-  # 🚀 2️⃣ Build da imagem Docker com tag de versão
+  # 🚀 2️⃣ Build da imagem Docker
   - name: "gcr.io/cloud-builders/docker"
     args:
       [
         "build",
         "-t",
         "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest",
-        "-t",
-        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}",
         "."
       ]
 
-  # 📤 3️⃣ Envia imagem para o Artifact Registry
+  # 📤 3️⃣ Envia imagem ao Artifact Registry
   - name: "gcr.io/cloud-builders/docker"
     args:
       [
@@ -34,14 +30,7 @@ steps:
         "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest"
       ]
 
-  - name: "gcr.io/cloud-builders/docker"
-    args:
-      [
-        "push",
-        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}"
-      ]
-
-  # ☁️ 4️⃣ Deploy no Cloud Run
+  # ☁️ 4️⃣ Deploy no Cloud Run (com variáveis e Secret)
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
@@ -61,13 +50,15 @@ steps:
         "--port",
         "8080",
         "--set-env-vars",
-        "NODE_ENV=production,HOTMART_SECRET=TMIA_3v1_SECRET_2025"
+        "NODE_ENV=production,HOTMART_SECRET=y4GJWDRbL1IXEOwXRwWN2G0GyQKkPJ22417386,GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-service-account",
+        "--mount",
+        "volume=firebase-key,source=projects/$PROJECT_ID/secrets/firebase-service-account,mode=0444,mount-path=/etc/secrets"
       ]
 
 # 🔐 Conta de serviço usada para o deploy
 serviceAccount: "travelmundo-api-sa@gen-lang-client-0394942372.iam.gserviceaccount.com"
 
-# ⏱️ Tempo máximo e destino dos logs
 timeout: 900s
 options:
   logging: CLOUD_LOGGING_ONLY
+
