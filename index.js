@@ -1,6 +1,6 @@
 // ============================================================
-// 🌍 TravelMundo IA - API v3.1.6
-// 🔐 Webhook Hotmart Compatível + Logs Detalhados
+// 🌍 TravelMundo IA - API v3.1.7
+// 🔐 Webhook Hotmart + Firebase via Secret Manager (Cloud Run Ready)
 // ============================================================
 
 import express from "express";
@@ -13,30 +13,70 @@ import fs from "fs";
 dotenv.config();
 const app = express();
 
-// ✅ Middleware de parsing (aceita JSON + x-www-form-urlencoded)
+// ✅ Middleware de parsing
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// 🔥 Inicialização Firebase
-const serviceAccountPath = "./serviceAccountKey.json";
-if (fs.existsSync(serviceAccountPath)) {
-  const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-  console.log("🔥 Firebase conectado com sucesso!");
-} else {
-  console.warn("⚠️ Arquivo serviceAccountKey.json não encontrado — Firebase não inicializado.");
-}
-const db = admin.apps.length ? admin.firestore() : null;
+// ============================================================
+// 🔥 Inicialização Firebase (Cloud Run + Secret Manager)
+// ============================================================
+const credFromEnv = process.env.GOOGLE_APPLICATION_CREDENTIALS; // ex.: /etc/secrets/firebase-service-account
+const credDefaultPath = "/etc/secrets/firebase-service-account"; // caminho do Secret montado
+const localFallback = "./serviceAccountKey.json"; // fallback p/ ambiente local
 
+function initFirebase() {
+  try {
+    let pathToCred =
+      credFromEnv && fs.existsSync(credFromEnv)
+        ? credFromEnv
+        : fs.existsSync(credDefaultPath)
+        ? credDefaultPath
+        : fs.existsSync(localFallback)
+        ? localFallback
+        : null;
+
+    if (!pathToCred) {
+      console.warn("⚠️ Nenhum arquivo de credencial encontrado. Firebase não inicializado.");
+      return null;
+    }
+
+    console.log(`🔑 Usando credencial Firebase em: ${pathToCred}`);
+    const serviceAccount = JSON.parse(fs.readFileSync(pathToCred, "utf8"));
+
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+
+    console.log("🔥 Firebase conectado com sucesso!");
+    return admin.firestore();
+  } catch (e) {
+    console.error("❌ Falha ao inicializar Firebase:", e);
+    return null;
+  }
+}
+
+const db = admin.apps.length ? admin.firestore() : initFirebase();
+
+// ============================================================
 // ✅ Health Check
+// ============================================================
 app.get("/", (req, res) => {
   res.status(200).send("✅ TravelMundo IA API ativa e online!");
 });
-app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.6" }));
+
+app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.7" }));
+
+app.get("/test-firebase", async (req, res) => {
+  try {
+    if (!db) throw new Error("Firebase não configurado");
+    await db.collection("__test__").doc("ping").set({ ok: true, time: new Date().toISOString() });
+    res.status(200).json({ success: true, message: "Conexão com Firestore estabelecida!" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ============================================================
 // 🔔 Webhook Hotmart
@@ -52,7 +92,6 @@ app.post("/webhook", async (req, res) => {
     console.log(`🔑 [${requestId}] Token recebido: ${receivedToken || "(vazio)"}`);
     console.log(`🔍 [${requestId}] Comparando com variável HOTMART_SECRET`);
 
-    // 🔒 Validação do token
     if (!expectedToken) {
       console.error(`❌ [${requestId}] HOTMART_SECRET ausente nas variáveis de ambiente`);
       return res.status(500).json({ error: "Configuração ausente no servidor" });
@@ -67,11 +106,11 @@ app.post("/webhook", async (req, res) => {
     console.log(`📦 [${requestId}] Tipo de conteúdo: ${req.headers["content-type"]}`);
     console.log(`🧠 [${requestId}] Body recebido:`, req.body);
 
-    // 🔍 Extrai dados principais
     const event = req.body.event || req.body.event_name || req.body.status || "unknown";
     const email =
       req.body.email ||
       req.body.buyer_email ||
+      req.body?.buyer?.email ||
       req.body?.data?.buyer?.email ||
       req.body?.data?.buyer_email;
 
@@ -148,21 +187,9 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
-// 🔍 Rotas utilitárias
-// ============================================================
-app.get("/status", (req, res) =>
-  res.status(200).json({
-    version: "3.1.6",
-    service: "TravelMundo IA",
-    firebase: !!db,
-    env: process.env.NODE_ENV || "production",
-  })
-);
-
-// ============================================================
 // 🚀 Inicialização do servidor
 // ============================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 TravelMundo API v3.1.6 rodando na porta ${PORT}`);
+  console.log(`🚀 TravelMundo API v3.1.7 rodando na porta ${PORT}`);
 });
