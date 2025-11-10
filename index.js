@@ -1,5 +1,5 @@
 // ============================================================
-// 🌍 TravelMundo IA - API v3.1.7
+// 🌍 TravelMundo IA - API v3.1.8
 // 🔐 Webhook Hotmart + Firebase via Secret Manager (Cloud Run Ready)
 // ============================================================
 
@@ -22,9 +22,9 @@ app.use(bodyParser.json());
 // ============================================================
 // 🔥 Inicialização Firebase (Cloud Run + Secret Manager)
 // ============================================================
-const credFromEnv = process.env.GOOGLE_APPLICATION_CREDENTIALS; // ex.: /etc/secrets/firebase-service-account
-const credDefaultPath = "/etc/secrets/firebase-service-account"; // caminho do Secret montado
-const localFallback = "./serviceAccountKey.json"; // fallback p/ ambiente local
+const credFromEnv = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const credDefaultPath = "/etc/secrets/firebase-service-account";
+const localFallback = "./serviceAccountKey.json";
 
 function initFirebase() {
   try {
@@ -60,13 +60,25 @@ function initFirebase() {
 const db = admin.apps.length ? admin.firestore() : initFirebase();
 
 // ============================================================
-// ✅ Health Check
+// ✅ Health Check e Status
 // ============================================================
 app.get("/", (req, res) => {
   res.status(200).send("✅ TravelMundo IA API ativa e online!");
 });
 
-app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.7" }));
+app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.8" }));
+
+app.get("/status", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    version: "3.1.8",
+    service: "TravelMundo IA",
+    firebase: !!db,
+    env: process.env.NODE_ENV || "production",
+    credentialsPath:
+      process.env.GOOGLE_APPLICATION_CREDENTIALS || "não definida",
+  });
+});
 
 app.get("/test-firebase", async (req, res) => {
   try {
@@ -102,7 +114,6 @@ app.post("/webhook", async (req, res) => {
       return res.status(401).json({ error: "Assinatura inválida" });
     }
 
-    // 🧩 Log básico do payload
     console.log(`📦 [${requestId}] Tipo de conteúdo: ${req.headers["content-type"]}`);
     console.log(`🧠 [${requestId}] Body recebido:`, req.body);
 
@@ -191,5 +202,5 @@ app.post("/webhook", async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 TravelMundo API v3.1.7 rodando na porta ${PORT}`);
+  console.log(`🚀 TravelMundo API v3.1.8 rodando na porta ${PORT}`);
 });
