@@ -1,6 +1,6 @@
 // ============================================================
 // 🌍 TravelMundo IA - API v3.1.8
-// 🔐 Webhook Hotmart + Firebase via Secret Manager (Cloud Run Ready)
+// 🔐 Webhook Hotmart + Firebase (compatível com Secret Manager)
 // ============================================================
 
 import express from "express";
@@ -13,54 +13,60 @@ import fs from "fs";
 dotenv.config();
 const app = express();
 
-// ✅ Middleware de parsing
+// ============================================================
+// ⚙️ Configuração básica do servidor
+// ============================================================
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
 // ============================================================
-// 🔥 Inicialização Firebase (Cloud Run + Secret Manager)
+// 🔥 Inicialização inteligente do Firebase (modo híbrido)
 // ============================================================
-const credFromEnv = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-const credDefaultPath = "/etc/secrets/firebase-service-account";
-const localFallback = "./serviceAccountKey.json";
-
 function initFirebase() {
   try {
-    let pathToCred =
-      credFromEnv && fs.existsSync(credFromEnv)
-        ? credFromEnv
-        : fs.existsSync(credDefaultPath)
-        ? credDefaultPath
-        : fs.existsSync(localFallback)
-        ? localFallback
-        : null;
-
-    if (!pathToCred) {
-      console.warn("⚠️ Nenhum arquivo de credencial encontrado. Firebase não inicializado.");
-      return null;
+    // 1️⃣ Tentativa: credencial injetada como variável JSON (Secret Manager)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      console.log("🔍 Detectado secret inline via variável FIREBASE_SERVICE_ACCOUNT");
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("🔥 Firebase inicializado via Secret Manager (variável JSON)");
+      return admin.firestore();
     }
 
-    console.log(`🔑 Usando credencial Firebase em: ${pathToCred}`);
-    const serviceAccount = JSON.parse(fs.readFileSync(pathToCred, "utf8"));
+    // 2️⃣ Tentativa: arquivo referenciado pelo GOOGLE_APPLICATION_CREDENTIALS
+    const credPath =
+      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+      "/etc/secrets/firebase-service-account" ||
+      "./serviceAccountKey.json";
 
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
+    if (fs.existsSync(credPath)) {
+      console.log(`🔍 Detectado arquivo de credencial em: ${credPath}`);
+      const serviceAccount = JSON.parse(fs.readFileSync(credPath, "utf8"));
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("🔥 Firebase inicializado via arquivo de credenciais");
+      return admin.firestore();
+    }
 
-    console.log("🔥 Firebase conectado com sucesso!");
-    return admin.firestore();
-  } catch (e) {
-    console.error("❌ Falha ao inicializar Firebase:", e);
+    // 3️⃣ Falha total
+    console.warn("⚠️ Nenhum método de autenticação Firebase encontrado!");
+    return null;
+  } catch (err) {
+    console.error("❌ Erro ao inicializar Firebase:", err);
     return null;
   }
 }
 
+// Inicializa Firebase se ainda não houver app
 const db = admin.apps.length ? admin.firestore() : initFirebase();
 
 // ============================================================
-// ✅ Health Check e Status
+// ✅ Rotas de status e diagnóstico
 // ============================================================
 app.get("/", (req, res) => {
   res.status(200).send("✅ TravelMundo IA API ativa e online!");
@@ -69,23 +75,25 @@ app.get("/", (req, res) => {
 app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.8" }));
 
 app.get("/status", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    version: "3.1.8",
+  res.json({
     service: "TravelMundo IA",
+    version: "3.1.8",
     firebase: !!db,
     env: process.env.NODE_ENV || "production",
-    credentialsPath:
-      process.env.GOOGLE_APPLICATION_CREDENTIALS || "não definida",
+    secretDetected: !!process.env.FIREBASE_SERVICE_ACCOUNT,
   });
 });
 
 app.get("/test-firebase", async (req, res) => {
   try {
     if (!db) throw new Error("Firebase não configurado");
-    await db.collection("__test__").doc("ping").set({ ok: true, time: new Date().toISOString() });
+    await db.collection("__test__").doc("ping").set({
+      ok: true,
+      time: new Date().toISOString(),
+    });
     res.status(200).json({ success: true, message: "Conexão com Firestore estabelecida!" });
   } catch (err) {
+    console.error("❌ Erro de conexão com Firestore:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -102,10 +110,10 @@ app.post("/webhook", async (req, res) => {
     const expectedToken = process.env.HOTMART_SECRET?.trim();
 
     console.log(`🔑 [${requestId}] Token recebido: ${receivedToken || "(vazio)"}`);
-    console.log(`🔍 [${requestId}] Comparando com variável HOTMART_SECRET`);
+    console.log(`🔍 [${requestId}] Validando token...`);
 
     if (!expectedToken) {
-      console.error(`❌ [${requestId}] HOTMART_SECRET ausente nas variáveis de ambiente`);
+      console.error(`❌ [${requestId}] HOTMART_SECRET ausente`);
       return res.status(500).json({ error: "Configuração ausente no servidor" });
     }
 
@@ -113,9 +121,6 @@ app.post("/webhook", async (req, res) => {
       console.warn(`🚫 [${requestId}] Token inválido`);
       return res.status(401).json({ error: "Assinatura inválida" });
     }
-
-    console.log(`📦 [${requestId}] Tipo de conteúdo: ${req.headers["content-type"]}`);
-    console.log(`🧠 [${requestId}] Body recebido:`, req.body);
 
     const event = req.body.event || req.body.event_name || req.body.status || "unknown";
     const email =
@@ -204,3 +209,4 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 TravelMundo API v3.1.8 rodando na porta ${PORT}`);
 });
+
