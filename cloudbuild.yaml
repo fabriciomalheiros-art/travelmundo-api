@@ -1,115 +1,85 @@
-# =========================================
-# 🌍 TravelMundo IA - Cloud Build (API Node v3.1.1)
-# Deploy automático no Cloud Run (região: us-west1)
-# Com rollback automático em caso de falha
-# =========================================
+# ============================================================
+# 🌍 TravelMundo IA - Cloud Build (v3.1.3)
+# Deploy automático com versionamento e logs aprimorados
+# ============================================================
+
+substitutions:
+  _SERVICE_NAME: "travelmundo-api"
+  _REGION: "us-west1"
+  _VERSION: "3.1.3" # 🔄 Atualize aqui se quiser forçar uma versão
 
 steps:
   # 🧩 1️⃣ Instalar dependências
-  - name: 'gcr.io/cloud-builders/npm'
-    dir: '.'
-    args: ['install']
-    id: 'Instalar Dependências'
+  - name: "gcr.io/cloud-builders/npm"
+    args: ["install"]
 
-  # 🧪 2️⃣ Log de ambiente e diagnóstico
-  - name: 'gcr.io/cloud-builders/gcloud'
-    entrypoint: bash
+  # ⚙️ 2️⃣ Gerar variável de versão automática
+  - name: "bash"
+    id: "versioning"
+    entrypoint: "bash"
     args:
-      - -c
+      - "-c"
       - |
-        echo "🔍 Versão Node:"
-        node -v
-        echo "🔍 Variáveis de ambiente:"
-        echo "HOTMART_SECRET=${_HOTMART_SECRET}"
-        echo "NODE_ENV=${_NODE_ENV}"
-        echo "🧾 Data de build: $(date)"
+        VERSION_DATE=$(date +'%Y%m%d%H%M')
+        echo "VERSION=${_VERSION}-${VERSION_DATE}" >> /workspace/build.env
+        echo "🔢 Versão gerada: ${_VERSION}-${VERSION_DATE}"
 
-  # 🚀 3️⃣ Build da imagem Docker e push para Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    dir: '.'
+  # 🚀 3️⃣ Build da imagem Docker com tag de versão
+  - name: "gcr.io/cloud-builders/docker"
     args:
       [
-        'build',
-        '-t',
-        'us-west1-docker.pkg.dev/$PROJECT_ID/travelmundo-api/travelmundo-api:latest',
-        '.'
+        "build",
+        "-t",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest",
+        "-t",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}",
+        "-t",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:$(date +%Y%m%d%H%M)",
+        "."
       ]
-    id: 'Build Docker'
 
-  - name: 'gcr.io/cloud-builders/docker'
+  # 📤 4️⃣ Envia imagem para o Artifact Registry
+  - name: "gcr.io/cloud-builders/docker"
     args:
       [
-        'push',
-        'us-west1-docker.pkg.dev/$PROJECT_ID/travelmundo-api/travelmundo-api:latest'
+        "push",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest"
       ]
-    id: 'Push Docker'
 
-  # ⚙️ 4️⃣ Deploy principal no Cloud Run
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      [
+        "push",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}"
+      ]
+
+  # ☁️ 5️⃣ Deploy no Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
       [
-        'run',
-        'deploy',
-        'travelmundo-api',
-        '--image',
-        'us-west1-docker.pkg.dev/$PROJECT_ID/travelmundo-api/travelmundo-api:latest',
-        '--region',
-        'us-west1',
-        '--platform',
-        'managed',
-        '--allow-unauthenticated',
-        '--memory',
-        '512Mi',
-        '--port',
-        '8080',
-        '--timeout',
-        '300',
-        '--set-env-vars',
-        'NODE_ENV=${_NODE_ENV},HOTMART_SECRET=${_HOTMART_SECRET}'
+        "run",
+        "deploy",
+        "${_SERVICE_NAME}",
+        "--image",
+        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest",
+        "--region",
+        "${_REGION}",
+        "--platform",
+        "managed",
+        "--allow-unauthenticated",
+        "--memory",
+        "512Mi",
+        "--port",
+        "8080",
+        "--set-env-vars",
+        "NODE_ENV=production,HOTMART_SECRET=TMIA_3v1_SECRET_2025"
       ]
-    id: 'Deploy Cloud Run'
 
-  # 🛑 5️⃣ Rollback automático se o deploy falhar
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        echo "⚠️ Verificando status do último deploy..."
-        LAST_REVISION=$(gcloud run revisions list \
-          --service=travelmundo-api \
-          --region=us-west1 \
-          --format='value(METADATA.name)' \
-          --limit=1)
-        echo "Última revisão ativa: $LAST_REVISION"
-        if [ -z "$LAST_REVISION" ]; then
-          echo "❌ Nenhuma revisão anterior encontrada. Rollback cancelado."
-          exit 0
-        fi
-        echo "⏪ Restaurando revisão anterior..."
-        gcloud run services update-traffic travelmundo-api \
-          --region=us-west1 \
-          --to-revisions=$LAST_REVISION=100
-        echo "✅ Rollback concluído: serviço restaurado para $LAST_REVISION"
-    id: 'Rollback Automático'
-    waitFor:
-      - 'Deploy Cloud Run'
-    # Rollback só executa se o deploy falhar
-    allowFailure: true
+# 🔐 Conta de serviço usada para o deploy
+serviceAccount: "travelmundo-api-sa@gen-lang-client-0394942372.iam.gserviceaccount.com"
 
-# ===============================
-# 🔐 Permissões & Configurações
-# ===============================
-serviceAccount: 'travelmundo-api-sa@gen-lang-client-0394942372.iam.gserviceaccount.com'
-
+# ⏱️ Tempo máximo e destino dos logs
 timeout: 900s
 options:
   logging: CLOUD_LOGGING_ONLY
-
-# ===============================
-# 🧩 Substituições configuráveis
-# ===============================
-substitutions:
-  _NODE_ENV: "production"
-  _HOTMART_SECRET: "TMIA_3v1_SECRET_2025"
