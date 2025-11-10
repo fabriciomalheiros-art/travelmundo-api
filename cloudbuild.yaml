@@ -1,30 +1,20 @@
 # ============================================================
-# 🌍 TravelMundo IA - Cloud Build (v3.1.3)
-# Deploy automático com versionamento e logs aprimorados
+# 🌍 TravelMundo IA - Cloud Build (v3.1.4)
+# Deploy automático no Cloud Run (us-west1)
+# Compatível com Gatilhos e Execuções Manuais ✅
 # ============================================================
 
 substitutions:
   _SERVICE_NAME: "travelmundo-api"
   _REGION: "us-west1"
-  _VERSION: "3.1.3" # 🔄 Atualize aqui se quiser forçar uma versão
+  _VERSION: "3.1.4"
 
 steps:
   # 🧩 1️⃣ Instalar dependências
   - name: "gcr.io/cloud-builders/npm"
     args: ["install"]
 
-  # ⚙️ 2️⃣ Gerar variável de versão automática
-  - name: "bash"
-    id: "versioning"
-    entrypoint: "bash"
-    args:
-      - "-c"
-      - |
-        VERSION_DATE=$(date +'%Y%m%d%H%M')
-        echo "VERSION=${_VERSION}-${VERSION_DATE}" >> /workspace/build.env
-        echo "🔢 Versão gerada: ${_VERSION}-${VERSION_DATE}"
-
-  # 🚀 3️⃣ Build da imagem Docker com tag de versão
+  # 🚀 2️⃣ Build da imagem Docker com tag de versão
   - name: "gcr.io/cloud-builders/docker"
     args:
       [
@@ -33,12 +23,10 @@ steps:
         "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest",
         "-t",
         "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}",
-        "-t",
-        "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:$(date +%Y%m%d%H%M)",
         "."
       ]
 
-  # 📤 4️⃣ Envia imagem para o Artifact Registry
+  # 📤 3️⃣ Envia imagem para o Artifact Registry
   - name: "gcr.io/cloud-builders/docker"
     args:
       [
@@ -53,7 +41,7 @@ steps:
         "us-west1-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:${_VERSION}"
       ]
 
-  # ☁️ 5️⃣ Deploy no Cloud Run
+  # ☁️ 4️⃣ Deploy no Cloud Run
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
