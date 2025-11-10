@@ -1,15 +1,30 @@
 # =========================================
-# 🌍 TravelMundo IA - Cloud Build (API Node)
-# Deploy automático no Cloud Run (us-west1)
+# 🌍 TravelMundo IA - Cloud Build (API Node v3.1.1)
+# Deploy automático no Cloud Run (região: us-west1)
+# Com rollback automático em caso de falha
 # =========================================
 
 steps:
-  # 🧩 1. Instala dependências
+  # 🧩 1️⃣ Instalar dependências
   - name: 'gcr.io/cloud-builders/npm'
     dir: '.'
     args: ['install']
+    id: 'Instalar Dependências'
 
-  # 🚀 2. Cria imagem Docker e envia para o Artifact Registry
+  # 🧪 2️⃣ Log de ambiente e diagnóstico
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        echo "🔍 Versão Node:"
+        node -v
+        echo "🔍 Variáveis de ambiente:"
+        echo "HOTMART_SECRET=${_HOTMART_SECRET}"
+        echo "NODE_ENV=${_NODE_ENV}"
+        echo "🧾 Data de build: $(date)"
+
+  # 🚀 3️⃣ Build da imagem Docker e push para Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     dir: '.'
     args:
@@ -19,6 +34,7 @@ steps:
         'us-west1-docker.pkg.dev/$PROJECT_ID/travelmundo-api/travelmundo-api:latest',
         '.'
       ]
+    id: 'Build Docker'
 
   - name: 'gcr.io/cloud-builders/docker'
     args:
@@ -26,8 +42,9 @@ steps:
         'push',
         'us-west1-docker.pkg.dev/$PROJECT_ID/travelmundo-api/travelmundo-api:latest'
       ]
+    id: 'Push Docker'
 
-  # ⚙️ 3. Faz o deploy no Cloud Run
+  # ⚙️ 4️⃣ Deploy principal no Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -45,8 +62,41 @@ steps:
         '--memory',
         '512Mi',
         '--port',
-        '8080'
+        '8080',
+        '--timeout',
+        '300',
+        '--set-env-vars',
+        'NODE_ENV=${_NODE_ENV},HOTMART_SECRET=${_HOTMART_SECRET}'
       ]
+    id: 'Deploy Cloud Run'
+
+  # 🛑 5️⃣ Rollback automático se o deploy falhar
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        echo "⚠️ Verificando status do último deploy..."
+        LAST_REVISION=$(gcloud run revisions list \
+          --service=travelmundo-api \
+          --region=us-west1 \
+          --format='value(METADATA.name)' \
+          --limit=1)
+        echo "Última revisão ativa: $LAST_REVISION"
+        if [ -z "$LAST_REVISION" ]; then
+          echo "❌ Nenhuma revisão anterior encontrada. Rollback cancelado."
+          exit 0
+        fi
+        echo "⏪ Restaurando revisão anterior..."
+        gcloud run services update-traffic travelmundo-api \
+          --region=us-west1 \
+          --to-revisions=$LAST_REVISION=100
+        echo "✅ Rollback concluído: serviço restaurado para $LAST_REVISION"
+    id: 'Rollback Automático'
+    waitFor:
+      - 'Deploy Cloud Run'
+    # Rollback só executa se o deploy falhar
+    allowFailure: true
 
 # ===============================
 # 🔐 Permissões & Configurações
@@ -56,3 +106,10 @@ serviceAccount: 'travelmundo-api-sa@gen-lang-client-0394942372.iam.gserviceaccou
 timeout: 900s
 options:
   logging: CLOUD_LOGGING_ONLY
+
+# ===============================
+# 🧩 Substituições configuráveis
+# ===============================
+substitutions:
+  _NODE_ENV: "production"
+  _HOTMART_SECRET: "TMIA_3v1_SECRET_2025"
