@@ -4,11 +4,15 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
+import crypto from "crypto";
 
 dotenv.config();
 const app = express();
+
+// ✅ Middlewares — suporta JSON e Form-UrlEncoded (Hotmart usa esse formato)
 app.use(cors());
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // 🔥 Inicialização Firebase
 const serviceAccountPath = "./serviceAccountKey.json";
@@ -47,38 +51,31 @@ app.get("/ping", (req, res) => {
 app.get("/status", (req, res) => {
   res.status(200).json({
     status: "ok",
-    version: "2.1.0",
+    version: "3.1.0",
     environment: process.env.NODE_ENV || "production",
-    message: "🌍 TravelMundo API v2.1 rodando com sucesso! 🚀"
+    message: "🌍 TravelMundo API v3.1 rodando com sucesso! 🚀"
   });
 });
 
-// ✅ Testar conexão com Firebase Firestore
+// ✅ Testar conexão Firebase
 app.get("/test-firebase", async (req, res) => {
   try {
-    if (!db) {
-      return res.status(500).json({ success: false, message: "Firebase não configurado" });
-    }
+    if (!db) return res.status(500).json({ success: false, message: "Firebase não configurado" });
 
     const testRef = db.collection("test").doc("connection");
     await testRef.set({ timestamp: new Date().toISOString() });
 
     const doc = await testRef.get();
-    if (!doc.exists) {
-      return res.status(404).json({ success: false, message: "Documento não encontrado" });
-    }
-
     res.status(200).json({
       success: true,
-      message: "Conexão com Firestore estabelecida com sucesso!",
+      message: "Conexão com Firestore OK",
       data: doc.data()
     });
   } catch (error) {
-    console.error("Erro ao testar conexão com Firebase:", error);
+    console.error("Erro ao testar Firebase:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 
 // ✅ Registrar novo usuário
 app.post("/register", async (req, res) => {
@@ -109,11 +106,7 @@ app.post("/register", async (req, res) => {
     };
 
     await userRef.set(userData);
-    res.status(201).json({
-      success: true,
-      message: "Usuário cadastrado com sucesso!",
-      user: userData
-    });
+    res.status(201).json({ success: true, message: "Usuário cadastrado com sucesso!", user: userData });
   } catch (error) {
     console.error("Erro ao registrar usuário:", error);
     res.status(500).json({ error: error.message });
@@ -138,7 +131,7 @@ app.get("/credits", async (req, res) => {
   }
 });
 
-// ✅ Deduzir 1 crédito
+// ✅ Deduzir crédito
 app.post("/deduct", async (req, res) => {
   try {
     const { email, module } = req.body;
@@ -169,99 +162,40 @@ app.post("/deduct", async (req, res) => {
   }
 });
 
-// ✅ Adicionar créditos manualmente
-app.post("/add-credits", async (req, res) => {
-  try {
-    const { email, amount } = req.body;
-    if (!email || !amount) return res.status(400).json({ error: "Email e quantidade obrigatórios" });
-
-    const userRef = db.collection("users").doc(email);
-    const userSnap = await userRef.get();
-    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
-
-    const userData = userSnap.data();
-    const newCredits = userData.credits + Number(amount);
-
-    await userRef.update({
-      credits: newCredits,
-      lastUpdate: new Date().toISOString()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: `${amount} créditos adicionados`,
-      totalCredits: newCredits
-    });
-  } catch (error) {
-    console.error("Erro ao adicionar créditos:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ Atualizar plano
-app.post("/upgrade-plan", async (req, res) => {
-  try {
-    const { email, plan } = req.body;
-    if (!email || !plan) return res.status(400).json({ error: "Email e plano obrigatórios" });
-
-    const plans = {
-      free: { credits: 10, duration: 0 },
-      pro: { credits: 50, duration: 30 },
-      premium: { credits: 200, duration: 30 }
-    };
-    if (!plans[plan]) return res.status(400).json({ error: "Plano inválido" });
-
-    const userRef = db.collection("users").doc(email);
-    const userSnap = await userRef.get();
-    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
-
-    const expiresAt = plans[plan].duration
-      ? new Date(Date.now() + plans[plan].duration * 24 * 60 * 60 * 1000).toISOString()
-      : null;
-
-    await userRef.update({
-      plan,
-      credits: plans[plan].credits,
-      planExpiresAt: expiresAt,
-      lastUpdate: new Date().toISOString()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: `Plano atualizado para ${plan.toUpperCase()}`,
-      plan,
-      expiresAt
-    });
-  } catch (error) {
-    console.error("Erro ao atualizar plano:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ Webhook Hotmart (real)
-import crypto from "crypto";
-
+// ✅ Webhook Hotmart — compatível com payload form-urlencoded
 app.post("/webhook", async (req, res) => {
   try {
-    const signature = req.headers["x-hotmart-hottok"];
+    const hottok = req.headers["x-hotmart-hottok"];
     const secret = process.env.HOTMART_SECRET || "default_secret";
 
-    // Verifica assinatura
-    if (signature !== secret) {
-      return res.status(401).json({ error: "Assinatura inválida" });
+    console.log("🔐 Recebido Webhook Hotmart:", {
+      headers: req.headers,
+      body: req.body
+    });
+
+    // 🔒 Verifica token
+    if (!hottok || hottok !== secret) {
+      console.warn("❌ Token inválido recebido:", hottok);
+      return res.status(400).json({ success: false, message: "Token inválido" });
     }
 
-    const event = req.body.event;
-    const email = req.body.data?.buyer?.email || req.body.data?.buyer_email;
+    const event = req.body.event || req.body.evento;
+    const email = req.body.data?.buyer?.email || req.body.data?.buyer_email || req.body.email;
 
-    if (!email || !event)
-      return res.status(400).json({ error: "Evento ou e-mail ausente" });
+    if (!event || !email) {
+      console.warn("⚠️ Webhook sem dados obrigatórios:", req.body);
+      return res.status(400).json({ success: false, message: "Evento ou e-mail ausente" });
+    }
+
+    console.log(`📦 Evento recebido: ${event} para ${email}`);
 
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
 
-    if (!userSnap.exists)
-      return res.status(404).json({ error: "Usuário não encontrado" });
+    if (!userSnap.exists) {
+      console.warn("⚠️ Usuário não encontrado no Firestore:", email);
+      return res.status(404).json({ success: false, message: "Usuário não encontrado" });
+    }
 
     const userData = userSnap.data();
 
@@ -272,56 +206,46 @@ app.post("/webhook", async (req, res) => {
           plan: "pro",
           credits: userData.credits + 50,
           planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-          lastUpdate: new Date().toISOString(),
+          lastUpdate: new Date().toISOString()
         });
         await db.collection("transactions").add({
           email,
           type: "credit",
           amount: 50,
           event,
-          timestamp: new Date().toISOString(),
+          timestamp: new Date().toISOString()
         });
-        return res.json({ success: true, message: "Compra processada — plano PRO ativado." });
+        console.log(`💰 Compra aprovada para ${email}`);
+        return res.status(200).json({ success: true, message: "Compra aprovada — plano PRO ativado" });
 
       case "REFUND":
       case "refund":
-        await userRef.update({
-          plan: "free",
-          planExpiresAt: null,
-        });
-        await db.collection("transactions").add({
-          email,
-          type: "refund",
-          event,
-          timestamp: new Date().toISOString(),
-        });
-        return res.json({ success: true, message: "Reembolso processado — plano revertido." });
-
       case "SUBSCRIPTION_CANCELED":
       case "subscription_canceled":
         await userRef.update({
           plan: "free",
-          planExpiresAt: null,
+          planExpiresAt: null
         });
         await db.collection("transactions").add({
           email,
-          type: "canceled",
+          type: "cancel/refund",
           event,
-          timestamp: new Date().toISOString(),
+          timestamp: new Date().toISOString()
         });
-        return res.json({ success: true, message: "Assinatura cancelada — plano FREE ativado." });
+        console.log(`⚠️ Plano revertido para ${email}`);
+        return res.status(200).json({ success: true, message: "Plano revertido para FREE" });
 
       default:
-        return res.json({ success: false, message: `Evento ignorado: ${event}` });
+        console.log("ℹ️ Evento ignorado:", event);
+        return res.status(200).json({ success: true, message: `Evento ignorado: ${event}` });
     }
   } catch (error) {
-    console.error("Erro no Webhook Hotmart:", error);
-    res.status(500).json({ error: error.message });
+    console.error("🚨 Erro no Webhook Hotmart:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-
-// ✅ Listar módulos ativos
+// ✅ Listar módulos
 app.get("/modules", (req, res) => {
   res.json({
     modules: [
@@ -336,5 +260,6 @@ app.get("/modules", (req, res) => {
 // ✅ Inicializa servidor
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () =>
-  console.log(`🚀 TravelMundo API v2.1 running on port ${PORT}`)
+  console.log(`🚀 TravelMundo API v3.1 rodando na porta ${PORT}`)
 );
+
