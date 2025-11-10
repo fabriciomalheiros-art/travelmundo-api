@@ -1,6 +1,6 @@
 // ============================================================
-// 🌍 TravelMundo IA - API v3.1.8
-// 🔐 Webhook Hotmart + Firebase (compatível com Secret Manager)
+// 🌍 TravelMundo IA - API v3.1.9
+// 🔐 Firebase via Secret Manager (sem arquivo físico)
 // ============================================================
 
 import express from "express";
@@ -13,84 +13,70 @@ import fs from "fs";
 dotenv.config();
 const app = express();
 
-// ============================================================
-// ⚙️ Configuração básica do servidor
-// ============================================================
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
 // ============================================================
-// 🔥 Inicialização inteligente do Firebase (modo híbrido)
+// 🔥 Inicialização Firebase (modo 100% compatível Cloud Run)
 // ============================================================
 function initFirebase() {
   try {
-    // 1️⃣ Tentativa: credencial injetada como variável JSON (Secret Manager)
+    // 1️⃣ Tenta via Secret Manager (variável JSON)
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      console.log("🔍 Detectado secret inline via variável FIREBASE_SERVICE_ACCOUNT");
+      console.log("🔍 Detectado secret inline: FIREBASE_SERVICE_ACCOUNT");
       const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log("🔥 Firebase inicializado via Secret Manager (variável JSON)");
+      console.log("🔥 Firebase inicializado com sucesso via Secret Manager!");
       return admin.firestore();
     }
 
-    // 2️⃣ Tentativa: arquivo referenciado pelo GOOGLE_APPLICATION_CREDENTIALS
-    const credPath =
-      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-      "/etc/secrets/firebase-service-account" ||
-      "./serviceAccountKey.json";
-
-    if (fs.existsSync(credPath)) {
-      console.log(`🔍 Detectado arquivo de credencial em: ${credPath}`);
-      const serviceAccount = JSON.parse(fs.readFileSync(credPath, "utf8"));
+    // 2️⃣ Fallback para variável de caminho (se existir)
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+      console.log("📁 Usando credencial do caminho GOOGLE_APPLICATION_CREDENTIALS");
+      const serviceAccount = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "utf8"));
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log("🔥 Firebase inicializado via arquivo de credenciais");
+      console.log("🔥 Firebase inicializado via arquivo de caminho");
       return admin.firestore();
     }
 
-    // 3️⃣ Falha total
-    console.warn("⚠️ Nenhum método de autenticação Firebase encontrado!");
+    // 3️⃣ Fallback local (desenvolvimento)
+    const localPath = "./serviceAccountKey.json";
+    if (fs.existsSync(localPath)) {
+      console.log("📁 Usando credencial local serviceAccountKey.json");
+      const serviceAccount = JSON.parse(fs.readFileSync(localPath, "utf8"));
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("🔥 Firebase inicializado via arquivo local!");
+      return admin.firestore();
+    }
+
+    console.warn("⚠️ Nenhuma credencial Firebase detectada!");
     return null;
   } catch (err) {
-    console.error("❌ Erro ao inicializar Firebase:", err);
+    console.error("❌ Falha ao inicializar Firebase:", err);
     return null;
   }
 }
 
-// Inicializa Firebase se ainda não houver app
 const db = admin.apps.length ? admin.firestore() : initFirebase();
 
 // ============================================================
-// ✅ Rotas de status e diagnóstico
+// ✅ Rotas de diagnóstico
 // ============================================================
-app.get("/", (req, res) => {
-  res.status(200).send("✅ TravelMundo IA API ativa e online!");
-});
-
-app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.8" }));
-
-app.get("/status", (req, res) => {
-  res.json({
-    service: "TravelMundo IA",
-    version: "3.1.8",
-    firebase: !!db,
-    env: process.env.NODE_ENV || "production",
-    secretDetected: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-  });
-});
+app.get("/", (req, res) => res.status(200).send("✅ TravelMundo IA API ativa e online!"));
+app.get("/ping", (req, res) => res.json({ message: "pong", version: "3.1.9" }));
 
 app.get("/test-firebase", async (req, res) => {
   try {
     if (!db) throw new Error("Firebase não configurado");
-    await db.collection("__test__").doc("ping").set({
-      ok: true,
-      time: new Date().toISOString(),
-    });
+    await db.collection("__test__").doc("ping").set({ ok: true, time: new Date().toISOString() });
     res.status(200).json({ success: true, message: "Conexão com Firestore estabelecida!" });
   } catch (err) {
     console.error("❌ Erro de conexão com Firestore:", err);
@@ -108,9 +94,6 @@ app.post("/webhook", async (req, res) => {
   try {
     const receivedToken = req.headers["x-hotmart-hottok"];
     const expectedToken = process.env.HOTMART_SECRET?.trim();
-
-    console.log(`🔑 [${requestId}] Token recebido: ${receivedToken || "(vazio)"}`);
-    console.log(`🔍 [${requestId}] Validando token...`);
 
     if (!expectedToken) {
       console.error(`❌ [${requestId}] HOTMART_SECRET ausente`);
@@ -207,6 +190,5 @@ app.post("/webhook", async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 TravelMundo API v3.1.8 rodando na porta ${PORT}`);
+  console.log(`🚀 TravelMundo API v3.1.9 rodando na porta ${PORT}`);
 });
-
