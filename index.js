@@ -1,3 +1,8 @@
+// ============================================
+// 🌍 TravelMundo IA - API v3.1.3
+// Atualizado para Webhook Hotmart compatível
+// ============================================
+
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -8,15 +13,20 @@ import crypto from "crypto";
 
 dotenv.config();
 const app = express();
+
+// ✅ Configurações globais de parsing
 app.use(cors());
+app.use(express.urlencoded({ extended: true })); // 🔥 Aceita x-www-form-urlencoded
+app.use(express.json());
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true })); // ✅ Suporte a form-urlencoded (Hotmart)
 
 // 🔥 Inicialização Firebase
 const serviceAccountPath = "./serviceAccountKey.json";
 if (fs.existsSync(serviceAccountPath)) {
   const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
   console.log("🔥 Firebase conectado com sucesso!");
 } else {
   console.warn("⚠️ Arquivo serviceAccountKey.json não encontrado — Firebase não inicializado.");
@@ -30,7 +40,7 @@ async function checkPlanExpiration(userRef) {
   if (data.planExpiresAt && new Date(data.planExpiresAt) < new Date()) {
     await userRef.update({
       plan: "free",
-      planExpiresAt: null,
+      planExpiresAt: null
     });
     console.log(`⏳ Plano expirado para ${data.email}, rebaixado para Free`);
     return { ...data, plan: "free", planExpiresAt: null };
@@ -47,26 +57,28 @@ app.get("/ping", (req, res) => {
 app.get("/status", (req, res) => {
   res.status(200).json({
     status: "ok",
-    version: "3.1.1",
+    version: "3.1.3",
     environment: process.env.NODE_ENV || "production",
-    message: "🌍 TravelMundo API v3.1.1 rodando com sucesso! 🚀",
+    message: "🌍 TravelMundo API v3.1.3 rodando com sucesso! 🚀"
   });
 });
 
-// ✅ Teste Firebase
+// ✅ Testar conexão com Firebase Firestore
 app.get("/test-firebase", async (req, res) => {
   try {
     if (!db) return res.status(500).json({ success: false, message: "Firebase não configurado" });
     const testRef = db.collection("test").doc("connection");
     await testRef.set({ timestamp: new Date().toISOString() });
     const doc = await testRef.get();
+    if (!doc.exists) return res.status(404).json({ success: false, message: "Documento não encontrado" });
+
     res.status(200).json({
       success: true,
-      message: "Conexão com Firestore OK!",
-      data: doc.data(),
+      message: "Conexão com Firestore estabelecida com sucesso!",
+      data: doc.data()
     });
   } catch (error) {
-    console.error("Erro ao testar Firebase:", error);
+    console.error("Erro ao testar conexão com Firebase:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -80,13 +92,8 @@ app.post("/register", async (req, res) => {
 
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
-
     if (userSnap.exists) {
-      return res.status(200).json({
-        success: true,
-        message: "Usuário já cadastrado",
-        user: userSnap.data(),
-      });
+      return res.status(200).json({ success: true, message: "Usuário já cadastrado", user: userSnap.data() });
     }
 
     const userData = {
@@ -96,15 +103,11 @@ app.post("/register", async (req, res) => {
       plan: "free",
       createdAt: new Date().toISOString(),
       lastUpdate: new Date().toISOString(),
-      planExpiresAt: null,
+      planExpiresAt: null
     };
 
     await userRef.set(userData);
-    res.status(201).json({
-      success: true,
-      message: "Usuário cadastrado com sucesso!",
-      user: userData,
-    });
+    res.status(201).json({ success: true, message: "Usuário cadastrado com sucesso!", user: userData });
   } catch (error) {
     console.error("Erro ao registrar usuário:", error);
     res.status(500).json({ error: error.message });
@@ -121,7 +124,6 @@ app.get("/credits", async (req, res) => {
     const userRef = db.collection("users").doc(email);
     const userData = await checkPlanExpiration(userRef);
     if (!userData) return res.status(404).json({ error: "Usuário não encontrado" });
-
     res.status(200).json(userData);
   } catch (error) {
     console.error("Erro ao consultar créditos:", error);
@@ -145,14 +147,14 @@ app.post("/deduct", async (req, res) => {
 
     await userRef.update({
       credits: userData.credits - 1,
-      lastUpdate: new Date().toISOString(),
+      lastUpdate: new Date().toISOString()
     });
 
     res.status(200).json({
       success: true,
       message: "1 crédito deduzido com sucesso",
       remainingCredits: userData.credits - 1,
-      module,
+      module
     });
   } catch (error) {
     console.error("Erro ao deduzir crédito:", error);
@@ -170,16 +172,18 @@ app.post("/add-credits", async (req, res) => {
     const userSnap = await userRef.get();
     if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
 
-    const newCredits = userSnap.data().credits + Number(amount);
+    const userData = userSnap.data();
+    const newCredits = userData.credits + Number(amount);
+
     await userRef.update({
       credits: newCredits,
-      lastUpdate: new Date().toISOString(),
+      lastUpdate: new Date().toISOString()
     });
 
     res.status(200).json({
       success: true,
       message: `${amount} créditos adicionados`,
-      totalCredits: newCredits,
+      totalCredits: newCredits
     });
   } catch (error) {
     console.error("Erro ao adicionar créditos:", error);
@@ -196,7 +200,7 @@ app.post("/upgrade-plan", async (req, res) => {
     const plans = {
       free: { credits: 10, duration: 0 },
       pro: { credits: 50, duration: 30 },
-      premium: { credits: 200, duration: 30 },
+      premium: { credits: 200, duration: 30 }
     };
     if (!plans[plan]) return res.status(400).json({ error: "Plano inválido" });
 
@@ -212,14 +216,14 @@ app.post("/upgrade-plan", async (req, res) => {
       plan,
       credits: plans[plan].credits,
       planExpiresAt: expiresAt,
-      lastUpdate: new Date().toISOString(),
+      lastUpdate: new Date().toISOString()
     });
 
     res.status(200).json({
       success: true,
       message: `Plano atualizado para ${plan.toUpperCase()}`,
       plan,
-      expiresAt,
+      expiresAt
     });
   } catch (error) {
     console.error("Erro ao atualizar plano:", error);
@@ -227,64 +231,71 @@ app.post("/upgrade-plan", async (req, res) => {
   }
 });
 
-// ✅ Webhook Hotmart (corrigido v3.1.1)
+// ✅ Webhook Hotmart — compatível com x-www-form-urlencoded e JSON
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("🔐 Recebido Webhook Hotmart");
-    console.log("Headers:", req.headers);
-    console.log("Body:", req.body);
-
     const signature = req.headers["x-hotmart-hottok"];
     const secret = process.env.HOTMART_SECRET || "default_secret";
 
+    console.log("🔔 Recebido webhook Hotmart");
+    console.log("📦 Body recebido:", req.body);
+    console.log("🔑 Token recebido:", signature);
+    console.log("🔒 Token esperado:", secret);
+
     if (signature !== secret) {
-      console.warn("🚫 Assinatura inválida:", signature);
+      console.error("❌ Token inválido");
       return res.status(401).json({ error: "Assinatura inválida" });
     }
 
-    const body = req.body || {};
-    const event = body.event || body.event_type;
-    const email = body.buyer_email || body.email || body.data?.buyer?.email;
+    const event =
+      req.body.event || req.body.event_name || req.body.status || "unknown";
+    const email =
+      req.body.email ||
+      req.body.buyer_email ||
+      req.body?.data?.buyer?.email ||
+      req.body?.data?.buyer_email;
 
     if (!email) {
-      console.warn("⚠️ E-mail ausente no payload:", body);
-      return res.status(400).json({ error: "E-mail ausente" });
+      console.error("❌ Email ausente no payload:", req.body);
+      return res.status(400).json({ error: "Email ausente no payload" });
     }
 
-    console.log(`📩 Evento recebido: ${event} | Email: ${email}`);
     const userRef = db.collection("users").doc(email);
     const userSnap = await userRef.get();
-
     if (!userSnap.exists) {
+      console.warn(`⚠️ Usuário ${email} não encontrado, criando novo...`);
       await userRef.set({
         email,
-        credits: 0,
         plan: "free",
+        credits: 0,
         createdAt: new Date().toISOString(),
       });
     }
 
-    switch (event) {
+    switch (event.toLowerCase()) {
       case "purchase.approved":
         await userRef.update({
           plan: "pro",
           credits: admin.firestore.FieldValue.increment(50),
-          planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          planExpiresAt: new Date(
+            Date.now() + 30 * 24 * 60 * 60 * 1000
+          ).toISOString(),
           lastUpdate: new Date().toISOString(),
         });
         await db.collection("transactions").add({
           email,
           type: "credit",
-          amount: 50,
           event,
           timestamp: new Date().toISOString(),
         });
-        return res.json({ success: true, message: "Compra aprovada — créditos adicionados!" });
+        console.log(`✅ Compra aprovada para ${email}`);
+        return res.json({ success: true });
 
       case "subscription_canceled":
         await userRef.update({
           plan: "free",
           planExpiresAt: null,
+          lastUpdate: new Date().toISOString(),
         });
         await db.collection("transactions").add({
           email,
@@ -292,14 +303,15 @@ app.post("/webhook", async (req, res) => {
           event,
           timestamp: new Date().toISOString(),
         });
-        return res.json({ success: true, message: "Assinatura cancelada — plano revertido." });
+        console.log(`🔻 Assinatura cancelada para ${email}`);
+        return res.json({ success: true });
 
       default:
-        console.log("ℹ️ Evento ignorado:", event);
-        return res.json({ success: true, message: `Evento ignorado: ${event}` });
+        console.log(`ℹ️ Evento não tratado: ${event}`);
+        return res.json({ success: true, ignored: event });
     }
   } catch (error) {
-    console.error("❌ Erro no Webhook Hotmart:", error);
+    console.error("🔥 Erro no Webhook Hotmart:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -311,13 +323,13 @@ app.get("/modules", (req, res) => {
       { name: "TravelMundo IA", creditsPerUse: 1 },
       { name: "StyleMundo IA", creditsPerUse: 1 },
       { name: "SportMundo IA", creditsPerUse: 1 },
-      { name: "LifeMundo IA", creditsPerUse: 1 },
-    ],
+      { name: "LifeMundo IA", creditsPerUse: 1 }
+    ]
   });
 });
 
 // ✅ Inicializa servidor
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () =>
-  console.log(`🚀 TravelMundo API v3.1.1 rodando na porta ${PORT}`)
+  console.log(`🚀 TravelMundo API v3.1.3 rodando na porta ${PORT}`)
 );
