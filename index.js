@@ -1,11 +1,11 @@
-// 🌍 TravelMundo API — v3.4.0 (Firebase + Hotmart + Créditos & Transações)
-// -------------------------------------------------------
+// 🌍 TravelMundo API — v3.4.1 (Firebase + Hotmart + Créditos + Histórico)
+// -----------------------------------------------------------
 // Recursos principais:
-// ✅ Inicialização inteligente do Firebase (arquivo físico, Secret Manager ou Base64)
-// ✅ Diagnóstico visual com logs coloridos (chalk)
-// ✅ Endpoints de debug e teste de Firestore
-// ✅ Endpoints reais de negócio: compra e uso de créditos
-// ✅ Modo produção e Hotmart Secret integrados
+// ✅ Inicialização via Base64, arquivo físico ou Secret Manager
+// ✅ Logs coloridos com chalk
+// ✅ Endpoints de debug (/debug-env, /test-firebase)
+// ✅ Endpoints de negócio (/buy-credits, /use-credit, /user/:id, /transactions/:userId)
+// ✅ Firestore com controle de créditos e histórico de transações
 
 import express from "express";
 import cors from "cors";
@@ -23,7 +23,7 @@ app.use(bodyParser.json());
 
 let firebaseInitialized = false;
 
-// 🔥 1️⃣ Tenta inicializar o Firebase via Base64
+// 🔥 1️⃣ Inicializa via Base64 (preferencial)
 try {
   if (process.env.FIREBASE_CREDENTIALS_B64) {
     const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
@@ -38,10 +38,9 @@ try {
   console.error(chalk.red("❌ Erro ao inicializar Firebase via Base64:"), err.message);
 }
 
-// 🔥 2️⃣ Se não deu via Base64, tenta arquivo físico
+// 🔥 2️⃣ Fallback via arquivo físico
 if (!firebaseInitialized) {
-  const serviceAccountPath =
-    process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
+  const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
   if (fs.existsSync(serviceAccountPath)) {
     try {
       const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
@@ -58,10 +57,11 @@ if (!firebaseInitialized) {
   }
 }
 
-// ⚙️ Firestore
 const db = firebaseInitialized ? admin.firestore() : null;
 
+// -----------------------------------------------------------
 // 🧠 ENDPOINT — Diagnóstico do ambiente
+// -----------------------------------------------------------
 app.get("/debug-env", (req, res) => {
   res.json({
     message: "🔍 Diagnóstico do ambiente",
@@ -76,19 +76,11 @@ app.get("/debug-env", (req, res) => {
   });
 });
 
-// 🧾 ENDPOINT — Diagnóstico da chave Base64 decodificada (seguro)
-app.get("/debug-secret", (req, res) => {
-  if (!process.env.FIREBASE_CREDENTIALS_B64) {
-    return res.status(404).json({ error: "Variável FIREBASE_CREDENTIALS_B64 não encontrada" });
-  }
-  res.json({ status: "ok", length: process.env.FIREBASE_CREDENTIALS_B64.length });
-});
-
-// 🧪 ENDPOINT — Teste de Firestore
+// -----------------------------------------------------------
+// 🧪 ENDPOINT — Teste de conexão com Firebase
+// -----------------------------------------------------------
 app.get("/test-firebase", async (req, res) => {
-  if (!firebaseInitialized || !db) {
-    return res.status(500).json({ error: "Firebase não configurado" });
-  }
+  if (!firebaseInitialized || !db) return res.status(500).json({ error: "Firebase não configurado" });
   try {
     const testRef = db.collection("test_connection").doc("ping");
     await testRef.set({ ok: true, ts: new Date().toISOString() });
@@ -99,94 +91,162 @@ app.get("/test-firebase", async (req, res) => {
   }
 });
 
-// 💰 ENDPOINT — Comprar Créditos
+// -----------------------------------------------------------
+// 💰 ENDPOINT — Comprar créditos
+// -----------------------------------------------------------
 app.post("/buy-credits", async (req, res) => {
-  try {
-    const { userId, credits, transactionId } = req.body;
-    if (!userId || !credits || !transactionId) {
-      return res.status(400).json({ error: "Campos obrigatórios ausentes." });
-    }
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+  const { userId, credits, transactionId } = req.body;
 
+  if (!userId || !credits || !transactionId) {
+    return res.status(400).json({ error: "Parâmetros inválidos: userId, credits e transactionId são obrigatórios" });
+  }
+
+  try {
     const userRef = db.collection("users").doc(userId);
     const userSnap = await userRef.get();
     const currentCredits = userSnap.exists ? userSnap.data().credits || 0 : 0;
+    const newCredits = currentCredits + credits;
 
     await userRef.set(
-      {
-        credits: currentCredits + Number(credits),
-        updatedAt: new Date().toISOString(),
-      },
+      { credits: newCredits, updatedAt: new Date().toISOString() },
       { merge: true }
     );
 
-    await db.collection("transactions").add({
+    const txData = {
       userId,
-      credits: Number(credits),
-      transactionId,
       type: "purchase",
+      credits,
+      transactionId,
       timestamp: new Date().toISOString(),
-    });
+    };
+    await db.collection("transactions").add(txData);
 
-    console.log(chalk.green(`💰 ${credits} créditos adicionados ao usuário ${userId}`));
-    return res.status(200).json({
+    console.log(chalk.green(`💰 [BUY] Usuário ${userId} adicionou ${credits} créditos → Total: ${newCredits}`));
+
+    res.json({
       success: true,
       message: `✅ ${credits} créditos adicionados com sucesso!`,
+      totalCredits: newCredits,
+      transaction: txData,
     });
-  } catch (error) {
-    console.error(chalk.red("Erro em /buy-credits:"), error);
-    res.status(500).json({ error: "Erro ao adicionar créditos." });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao adicionar créditos:"), err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ⚡ ENDPOINT — Usar Crédito
+// -----------------------------------------------------------
+// ⚡ ENDPOINT — Utilizar 1 crédito
+// -----------------------------------------------------------
 app.post("/use-credit", async (req, res) => {
-  try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: "userId é obrigatório." });
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: "Parâmetro userId é obrigatório" });
 
+  try {
     const userRef = db.collection("users").doc(userId);
     const userSnap = await userRef.get();
 
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
-    }
+    if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
 
-    const userData = userSnap.data();
-    if ((userData.credits || 0) <= 0) {
-      console.log(chalk.yellow(`⚠️ Usuário ${userId} tentou usar crédito sem saldo.`));
-      return res.status(403).json({ error: "Créditos insuficientes." });
-    }
+    const data = userSnap.data();
+    const currentCredits = data.credits || 0;
+
+    if (currentCredits <= 0) return res.status(400).json({ error: "Créditos insuficientes" });
+
+    const newCredits = currentCredits - 1;
 
     await userRef.update({
-      credits: userData.credits - 1,
-      lastUsage: new Date().toISOString(),
+      credits: newCredits,
+      updatedAt: new Date().toISOString(),
     });
 
-    await db.collection("transactions").add({
+    const txData = {
       userId,
-      credits: -1,
       type: "usage",
+      credits: -1,
       timestamp: new Date().toISOString(),
-    });
+    };
+    await db.collection("transactions").add(txData);
 
-    console.log(chalk.cyan(`⚡ Crédito usado por ${userId}. Saldo restante: ${userData.credits - 1}`));
-    res.status(200).json({
+    console.log(chalk.yellow(`⚡ [USE] Usuário ${userId} utilizou 1 crédito → Restam: ${newCredits}`));
+
+    res.json({
       success: true,
       message: "✅ Crédito utilizado com sucesso.",
-      remainingCredits: userData.credits - 1,
+      remainingCredits: newCredits,
+      transaction: txData,
     });
-  } catch (error) {
-    console.error(chalk.red("Erro em /use-credit:"), error);
-    res.status(500).json({ error: "Erro ao usar crédito." });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao usar crédito:"), err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 🌐 Endpoint padrão
-app.get("/", (req, res) => {
-  res.send("🌍 TravelMundo API está rodando com sucesso!");
+// -----------------------------------------------------------
+// 💳 ENDPOINT — Consultar saldo do usuário
+// -----------------------------------------------------------
+app.get("/user/:id", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+  const userId = req.params.id;
+
+  try {
+    const userRef = db.collection("users").doc(userId);
+    const doc = await userRef.get();
+
+    if (!doc.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    res.json({ userId, credits: doc.data().credits || 0, updatedAt: doc.data().updatedAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// 🚀 Inicializa servidor local (para debug local)
+// -----------------------------------------------------------
+// 📜 ENDPOINT — Histórico de transações do usuário
+// -----------------------------------------------------------
+app.get("/transactions/:userId", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+  const { userId } = req.params;
+
+  try {
+    const txRef = db
+      .collection("transactions")
+      .where("userId", "==", userId)
+      .orderBy("timestamp", "desc");
+
+    const snapshot = await txRef.get();
+    if (snapshot.empty) return res.json({ userId, transactions: [] });
+
+    const transactions = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    console.log(chalk.magenta(`📜 Histórico solicitado → ${userId} (${transactions.length} transações)`));
+
+    res.json({
+      userId,
+      totalTransactions: transactions.length,
+      transactions,
+    });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao buscar transações:"), err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -----------------------------------------------------------
+// 🌐 Endpoint padrão
+// -----------------------------------------------------------
+app.get("/", (req, res) => {
+  res.send("🌍 TravelMundo API v3.4.1 — Online, Firebase ativo e endpoints de créditos prontos!");
+});
+
+// -----------------------------------------------------------
+// 🚀 Inicializa servidor
+// -----------------------------------------------------------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(chalk.blueBright(`🚀 Servidor ativo na porta ${PORT}`));
