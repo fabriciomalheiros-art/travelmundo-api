@@ -1,9 +1,10 @@
-// 🌍 TravelMundo API — v3.3.0 (Firebase + Hotmart Stable)
+// 🌍 TravelMundo API — v3.4.0 (Firebase + Hotmart + Créditos & Transações)
 // -------------------------------------------------------
 // Recursos principais:
 // ✅ Inicialização inteligente do Firebase (arquivo físico, Secret Manager ou Base64)
-// ✅ Diagnóstico visual com logs coloridos
+// ✅ Diagnóstico visual com logs coloridos (chalk)
 // ✅ Endpoints de debug e teste de Firestore
+// ✅ Endpoints reais de negócio: compra e uso de créditos
 // ✅ Modo produção e Hotmart Secret integrados
 
 import express from "express";
@@ -95,6 +96,88 @@ app.get("/test-firebase", async (req, res) => {
     res.json({ status: "ok", firestore_data: snap.data() });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// 💰 ENDPOINT — Comprar Créditos
+app.post("/buy-credits", async (req, res) => {
+  try {
+    const { userId, credits, transactionId } = req.body;
+    if (!userId || !credits || !transactionId) {
+      return res.status(400).json({ error: "Campos obrigatórios ausentes." });
+    }
+
+    const userRef = db.collection("users").doc(userId);
+    const userSnap = await userRef.get();
+    const currentCredits = userSnap.exists ? userSnap.data().credits || 0 : 0;
+
+    await userRef.set(
+      {
+        credits: currentCredits + Number(credits),
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+
+    await db.collection("transactions").add({
+      userId,
+      credits: Number(credits),
+      transactionId,
+      type: "purchase",
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(chalk.green(`💰 ${credits} créditos adicionados ao usuário ${userId}`));
+    return res.status(200).json({
+      success: true,
+      message: `✅ ${credits} créditos adicionados com sucesso!`,
+    });
+  } catch (error) {
+    console.error(chalk.red("Erro em /buy-credits:"), error);
+    res.status(500).json({ error: "Erro ao adicionar créditos." });
+  }
+});
+
+// ⚡ ENDPOINT — Usar Crédito
+app.post("/use-credit", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId é obrigatório." });
+
+    const userRef = db.collection("users").doc(userId);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    const userData = userSnap.data();
+    if ((userData.credits || 0) <= 0) {
+      console.log(chalk.yellow(`⚠️ Usuário ${userId} tentou usar crédito sem saldo.`));
+      return res.status(403).json({ error: "Créditos insuficientes." });
+    }
+
+    await userRef.update({
+      credits: userData.credits - 1,
+      lastUsage: new Date().toISOString(),
+    });
+
+    await db.collection("transactions").add({
+      userId,
+      credits: -1,
+      type: "usage",
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(chalk.cyan(`⚡ Crédito usado por ${userId}. Saldo restante: ${userData.credits - 1}`));
+    res.status(200).json({
+      success: true,
+      message: "✅ Crédito utilizado com sucesso.",
+      remainingCredits: userData.credits - 1,
+    });
+  } catch (error) {
+    console.error(chalk.red("Erro em /use-credit:"), error);
+    res.status(500).json({ error: "Erro ao usar crédito." });
   }
 });
 
