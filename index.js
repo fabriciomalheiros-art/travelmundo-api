@@ -4,130 +4,115 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
+import chalk from "chalk"; // ← biblioteca para logs coloridos (já vem no Node >=18)
 
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// ============================================================
-// 🔥 INICIALIZAÇÃO SEGURA DO FIREBASE (compatível com Cloud Run)
-// ============================================================
-let db = null;
-try {
-  const secretEnv = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const credentialsPath =
-    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-    "/secrets/firebase-service-account/service-account.json";
+console.log(chalk.cyanBright("🌍 Iniciando TravelMundo API..."));
 
-  if (secretEnv) {
-    console.log("📦 Detectado FIREBASE_SERVICE_ACCOUNT_JSON vindo do Secret Manager.");
+// ======================================================
+// 🔥 Função de inicialização Firebase com fallback total
+// ======================================================
+function initializeFirebase() {
+  const jsonPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
+  let initialized = false;
 
-    const serviceAccount = JSON.parse(secretEnv);
+  try {
+    // 1️⃣ Fallback absoluto: variável base64
+    if (process.env.FIREBASE_CREDENTIALS_B64) {
+      console.log(chalk.yellow("🧩 Detectada variável FIREBASE_CREDENTIALS_B64 — decodificando..."));
+      const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
+      const creds = JSON.parse(decoded);
+      admin.initializeApp({ credential: admin.credential.cert(creds) });
+      console.log(chalk.greenBright("🔥 Firebase inicializado via variável base64!"));
+      initialized = true;
+    }
 
-    // Garante que o diretório /secrets existe
-    const dir = credentialsPath.substring(0, credentialsPath.lastIndexOf("/"));
-    fs.mkdirSync(dir, { recursive: true });
-
-    // Grava o JSON físico (necessário para admin.credential.cert)
-    fs.writeFileSync(credentialsPath, JSON.stringify(serviceAccount, null, 2));
-    console.log(`📝 Credenciais gravadas em ${credentialsPath}`);
+    // 2️⃣ Caminho padrão (arquivo físico)
+    else if (fs.existsSync(jsonPath)) {
+      console.log(chalk.blueBright(`📂 Detectado arquivo Firebase em: ${jsonPath}`));
+      const serviceAccount = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+      console.log(chalk.greenBright("🔥 Firebase inicializado via arquivo local!"));
+      initialized = true;
+    } else {
+      console.warn(chalk.red("⚠️ Nenhum método de autenticação Firebase encontrado."));
+    }
+  } catch (error) {
+    console.error(chalk.bgRed.white("❌ Erro ao inicializar o Firebase:"), error.message);
   }
 
-  if (fs.existsSync(credentialsPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    db = admin.firestore();
-    console.log("🔥 Firebase inicializado com sucesso!");
-  } else {
-    console.warn("⚠️ Arquivo de credenciais Firebase não encontrado — inicialização ignorada.");
-  }
-} catch (error) {
-  console.error("❌ Erro ao inicializar Firebase:", error);
+  return initialized;
 }
 
-// ============================================================
-// 🧩 FUNÇÃO AUXILIAR: CHECAR EXPIRAÇÃO DE PLANO
-// ============================================================
-async function checkPlanExpiration(userRef) {
-  const userSnap = await userRef.get();
-  const data = userSnap.data();
-  if (data.planExpiresAt && new Date(data.planExpiresAt) < new Date()) {
-    await userRef.update({
-      plan: "free",
-      credits: 0
-    });
-  }
-}
+const firebaseReady = initializeFirebase();
+const db = admin.apps.length ? admin.firestore() : null;
 
-// ============================================================
-// 🔍 ENDPOINTS DE DEBUG / TESTE
-// ============================================================
-
-// Diagnóstico geral do ambiente
+// ======================================================
+// 🧠 Diagnóstico de ambiente
+// ======================================================
 app.get("/debug-env", (req, res) => {
-  const hasSecret = !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "(não definido)";
-  const firebaseOk = !!admin.apps.length;
-
+  const jsonPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
+  const hasFile = fs.existsSync(jsonPath);
   res.json({
     message: "🔍 Diagnóstico do ambiente",
-    has_FIREBASE_SERVICE_ACCOUNT_JSON: hasSecret,
-    GOOGLE_APPLICATION_CREDENTIALS: credsPath,
-    firebase_inicializado: firebaseOk,
+    has_FIREBASE_SERVICE_ACCOUNT_JSON: hasFile,
+    GOOGLE_APPLICATION_CREDENTIALS: jsonPath,
+    firebase_inicializado: firebaseReady,
     variaveis: {
-      NODE_ENV: process.env.NODE_ENV || "(não definido)",
-      HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ Ausente"
-    }
+      NODE_ENV: process.env.NODE_ENV || "❌ ausente",
+      HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ ausente",
+      FIREBASE_CREDENTIALS_B64: !!process.env.FIREBASE_CREDENTIALS_B64,
+    },
   });
 });
 
-// Teste básico de inicialização Firebase
+// ======================================================
+// 🧩 Diagnóstico direto do Secret (verifica conteúdo)
+// ======================================================
+app.get("/debug-secret", (req, res) => {
+  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
+  const exists = fs.existsSync(path);
+  let details = null;
+
+  if (exists) {
+    try {
+      const content = fs.readFileSync(path, "utf8");
+      const parsed = JSON.parse(content);
+      details = {
+        project_id: parsed.project_id,
+        client_email: parsed.client_email,
+      };
+    } catch (e) {
+      details = { error: e.message };
+    }
+  }
+
+  res.json({ path, exists, details });
+});
+
+// ======================================================
+// 🔥 Testa conexão Firebase
+// ======================================================
 app.get("/test-firebase", async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Firebase não configurado" });
-    await db.collection("test").doc("ping").set({ ok: true, ts: new Date() });
-    res.json({ success: true, message: "🔥 Firebase operacional" });
+    if (!db) throw new Error("Firebase não configurado");
+    const testDoc = db.collection("test_connection").doc("status");
+    await testDoc.set({ ok: true, timestamp: new Date().toISOString() });
+    const snap = await testDoc.get();
+    res.json({ success: true, data: snap.data() });
   } catch (err) {
-    console.error("Erro no test-firebase:", err);
-    res.status(500).json({ error: err.message });
+    res.json({ error: err.message });
   }
 });
 
-// Teste completo de Firestore (gravação e leitura)
-app.get("/test-firestore", async (req, res) => {
-  try {
-    if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
-
-    const ref = db.collection("debug").doc("check");
-    await ref.set({ status: "ok", updatedAt: new Date() });
-    const snap = await ref.get();
-
-    res.json({ firestore: snap.data() });
-  } catch (err) {
-    console.error("Erro no test-firestore:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ============================================================
-// 🌐 ENDPOINT PRINCIPAL / STATUS
-// ============================================================
-app.get("/", (req, res) => {
-  res.json({
-    message: "🚀 TravelMundo API rodando com sucesso!",
-    firebaseConectado: !!db,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ============================================================
-// 🚀 INICIALIZA SERVIDOR EXPRESS
-// ============================================================
+// ======================================================
+// 🌐 Inicia servidor
+// ======================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`✅ Servidor online na porta ${PORT}`);
+  console.log(chalk.magentaBright(`✅ Servidor rodando na porta ${PORT}`));
 });
