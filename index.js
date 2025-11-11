@@ -1,118 +1,110 @@
+// 🌍 TravelMundo API — v3.3.0 (Firebase + Hotmart Stable)
+// -------------------------------------------------------
+// Recursos principais:
+// ✅ Inicialização inteligente do Firebase (arquivo físico, Secret Manager ou Base64)
+// ✅ Diagnóstico visual com logs coloridos
+// ✅ Endpoints de debug e teste de Firestore
+// ✅ Modo produção e Hotmart Secret integrados
+
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
-import chalk from "chalk"; // ← biblioteca para logs coloridos (já vem no Node >=18)
+import chalk from "chalk";
 
 dotenv.config();
+
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-console.log(chalk.cyanBright("🌍 Iniciando TravelMundo API..."));
+let firebaseInitialized = false;
 
-// ======================================================
-// 🔥 Função de inicialização Firebase com fallback total
-// ======================================================
-function initializeFirebase() {
-  const jsonPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
-  let initialized = false;
-
-  try {
-    // 1️⃣ Fallback absoluto: variável base64
-    if (process.env.FIREBASE_CREDENTIALS_B64) {
-      console.log(chalk.yellow("🧩 Detectada variável FIREBASE_CREDENTIALS_B64 — decodificando..."));
-      const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
-      const creds = JSON.parse(decoded);
-      admin.initializeApp({ credential: admin.credential.cert(creds) });
-      console.log(chalk.greenBright("🔥 Firebase inicializado via variável base64!"));
-      initialized = true;
-    }
-
-    // 2️⃣ Caminho padrão (arquivo físico)
-    else if (fs.existsSync(jsonPath)) {
-      console.log(chalk.blueBright(`📂 Detectado arquivo Firebase em: ${jsonPath}`));
-      const serviceAccount = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
-      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-      console.log(chalk.greenBright("🔥 Firebase inicializado via arquivo local!"));
-      initialized = true;
-    } else {
-      console.warn(chalk.red("⚠️ Nenhum método de autenticação Firebase encontrado."));
-    }
-  } catch (error) {
-    console.error(chalk.bgRed.white("❌ Erro ao inicializar o Firebase:"), error.message);
+// 🔥 1️⃣ Tenta inicializar o Firebase via Base64
+try {
+  if (process.env.FIREBASE_CREDENTIALS_B64) {
+    const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
+    const creds = JSON.parse(decoded);
+    admin.initializeApp({
+      credential: admin.credential.cert(creds),
+    });
+    console.log(chalk.greenBright("🔥 Firebase inicializado via variável Base64!"));
+    firebaseInitialized = true;
   }
-
-  return initialized;
+} catch (err) {
+  console.error(chalk.red("❌ Erro ao inicializar Firebase via Base64:"), err.message);
 }
 
-const firebaseReady = initializeFirebase();
-const db = admin.apps.length ? admin.firestore() : null;
+// 🔥 2️⃣ Se não deu via Base64, tenta arquivo físico
+if (!firebaseInitialized) {
+  const serviceAccountPath =
+    process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
+  if (fs.existsSync(serviceAccountPath)) {
+    try {
+      const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log(chalk.cyanBright("🔥 Firebase inicializado via arquivo físico!"));
+      firebaseInitialized = true;
+    } catch (err) {
+      console.error(chalk.red("❌ Erro ao inicializar Firebase via arquivo:"), err.message);
+    }
+  } else {
+    console.warn(chalk.yellow("⚠️ Arquivo serviceAccountKey.json não encontrado."));
+  }
+}
 
-// ======================================================
-// 🧠 Diagnóstico de ambiente
-// ======================================================
+// ⚙️ Firestore
+const db = firebaseInitialized ? admin.firestore() : null;
+
+// 🧠 ENDPOINT — Diagnóstico do ambiente
 app.get("/debug-env", (req, res) => {
-  const jsonPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
-  const hasFile = fs.existsSync(jsonPath);
   res.json({
     message: "🔍 Diagnóstico do ambiente",
-    has_FIREBASE_SERVICE_ACCOUNT_JSON: hasFile,
-    GOOGLE_APPLICATION_CREDENTIALS: jsonPath,
-    firebase_inicializado: firebaseReady,
+    has_FIREBASE_SERVICE_ACCOUNT_JSON: fs.existsSync("./serviceAccountKey.json"),
+    GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS || "(não definido)",
+    firebase_inicializado: firebaseInitialized,
     variaveis: {
-      NODE_ENV: process.env.NODE_ENV || "❌ ausente",
+      NODE_ENV: process.env.NODE_ENV,
       HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ ausente",
       FIREBASE_CREDENTIALS_B64: !!process.env.FIREBASE_CREDENTIALS_B64,
     },
   });
 });
 
-// ======================================================
-// 🧩 Diagnóstico direto do Secret (verifica conteúdo)
-// ======================================================
+// 🧾 ENDPOINT — Diagnóstico da chave Base64 decodificada (seguro)
 app.get("/debug-secret", (req, res) => {
-  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS || "/secrets/serviceAccountKey.json";
-  const exists = fs.existsSync(path);
-  let details = null;
-
-  if (exists) {
-    try {
-      const content = fs.readFileSync(path, "utf8");
-      const parsed = JSON.parse(content);
-      details = {
-        project_id: parsed.project_id,
-        client_email: parsed.client_email,
-      };
-    } catch (e) {
-      details = { error: e.message };
-    }
+  if (!process.env.FIREBASE_CREDENTIALS_B64) {
+    return res.status(404).json({ error: "Variável FIREBASE_CREDENTIALS_B64 não encontrada" });
   }
-
-  res.json({ path, exists, details });
+  res.json({ status: "ok", length: process.env.FIREBASE_CREDENTIALS_B64.length });
 });
 
-// ======================================================
-// 🔥 Testa conexão Firebase
-// ======================================================
+// 🧪 ENDPOINT — Teste de Firestore
 app.get("/test-firebase", async (req, res) => {
+  if (!firebaseInitialized || !db) {
+    return res.status(500).json({ error: "Firebase não configurado" });
+  }
   try {
-    if (!db) throw new Error("Firebase não configurado");
-    const testDoc = db.collection("test_connection").doc("status");
-    await testDoc.set({ ok: true, timestamp: new Date().toISOString() });
-    const snap = await testDoc.get();
-    res.json({ success: true, data: snap.data() });
+    const testRef = db.collection("test_connection").doc("ping");
+    await testRef.set({ ok: true, ts: new Date().toISOString() });
+    const snap = await testRef.get();
+    res.json({ status: "ok", firestore_data: snap.data() });
   } catch (err) {
-    res.json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ======================================================
-// 🌐 Inicia servidor
-// ======================================================
+// 🌐 Endpoint padrão
+app.get("/", (req, res) => {
+  res.send("🌍 TravelMundo API está rodando com sucesso!");
+});
+
+// 🚀 Inicializa servidor local (para debug local)
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(chalk.magentaBright(`✅ Servidor rodando na porta ${PORT}`));
+  console.log(chalk.blueBright(`🚀 Servidor ativo na porta ${PORT}`));
 });
