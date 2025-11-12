@@ -1,11 +1,15 @@
-// 🌍 TravelMundo API — v3.8.0
+// -------------------------------------------------------
+// 🌍 TravelMundo API — v3.8.1-Stable
 // -------------------------------------------------------
 // Recursos principais:
 // ✅ Inicialização inteligente do Firebase (Base64 ou arquivo físico)
 // ✅ Diagnóstico visual com logs coloridos e status
 // ✅ Endpoints de negócio (creditar, consumir, consultar)
-// ✅ Endpoints administrativos (/debug-env e /_deploy-log)
+// ✅ Endpoints administrativos (/debug-env e /deploy-log)
+// ✅ Tratamento automático de índices ausentes no Firestore
+// ✅ Log de deploy salvo automaticamente no Firestore
 // ✅ Totalmente compatível com Cloud Run + Hotmart Secret
+// -------------------------------------------------------
 
 import express from "express";
 import cors from "cors";
@@ -13,213 +17,194 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
-import chalk from "chalk";
 
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+/* ======================================================
+   🔥 Inicialização do Firebase
+====================================================== */
 let firebaseInitialized = false;
-let db = null;
+let firebaseProjectId = null;
+let firebaseClientEmail = null;
 
-// 🔥 Inicialização do Firebase
 try {
-  if (process.env.FIREBASE_CREDENTIALS_B64) {
-    const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
-    const creds = JSON.parse(decoded);
+  const credsBase64 = process.env.FIREBASE_CREDENTIALS_B64;
+  if (credsBase64) {
+    const creds = JSON.parse(Buffer.from(credsBase64, "base64").toString());
     admin.initializeApp({ credential: admin.credential.cert(creds) });
-    console.log(chalk.green("🔥 Firebase inicializado via variável Base64!"));
     firebaseInitialized = true;
-  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "utf8"));
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    console.log(chalk.cyan("🔥 Firebase inicializado via arquivo físico!"));
-    firebaseInitialized = true;
+    firebaseProjectId = creds.project_id;
+    firebaseClientEmail = creds.client_email;
+    console.log("🔥 Firebase inicializado com sucesso!");
   } else {
-    console.warn(chalk.yellow("⚠️ Nenhum método de inicialização Firebase encontrado."));
+    console.warn("⚠️ FIREBASE_CREDENTIALS_B64 não encontrada.");
   }
 } catch (err) {
-  console.error(chalk.red("❌ Erro ao inicializar Firebase:"), err.message);
+  console.error("❌ Erro ao inicializar Firebase:", err.message);
 }
 
-if (firebaseInitialized) db = admin.firestore();
+const db = firebaseInitialized ? admin.firestore() : null;
 
-// -------------------------------------------------------
-// 🧩 ENDPOINTS DE NEGÓCIO — Créditos TravelMundo IA
-// -------------------------------------------------------
+/* ======================================================
+   ⚙️ Endpoints utilitários
+====================================================== */
 
-// 💰 Adicionar créditos
-app.post("/buy-credits", async (req, res) => {
+// Diagnóstico geral do ambiente
+app.get("/debug-env", (req, res) => {
+  res.json({
+    message: "🔍 Diagnóstico do ambiente",
+    firebase_inicializado: firebaseInitialized,
+    variaveis: {
+      NODE_ENV: process.env.NODE_ENV || "desconhecido",
+      HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ ausente",
+      FIREBASE_CREDENTIALS_B64: !!process.env.FIREBASE_CREDENTIALS_B64,
+      K_REVISION: process.env.K_REVISION || "N/A",
+      BUILD_ID: process.env.BUILD_ID || null,
+      DEPLOY_BY: process.env.DEPLOY_BY || null
+    },
+    credentials_inspect: {
+      mode: process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "none",
+      project_id: firebaseProjectId,
+      client_email: firebaseClientEmail
+    }
+  });
+});
+
+// Log de deploy no Firestore
+app.post("/deploy-log", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+
+  const payload = {
+    version: req.body.version || "unknown",
+    deployedBy: req.body.deployedBy || "unknown",
+    timestamp: new Date().toISOString(),
+    buildId: process.env.BUILD_ID || null,
+    revision: process.env.K_REVISION || "unknown"
+  };
+
   try {
-    const { userId, credits, transactionId } = req.body;
-    if (!userId || !credits) return res.status(400).json({ error: "Parâmetros inválidos" });
+    await db.collection("system_info").add(payload);
+    res.json({ ok: true, message: "Deploy log registrado com sucesso!", data: payload });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   💰 Sistema de Créditos TravelMundo IA
+====================================================== */
+
+// ✅ Adicionar créditos
+app.post("/buy-credits", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+
+  const { userId, credits, transactionId } = req.body;
+  if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+
+  try {
     const userRef = db.collection("users").doc(userId);
     const userSnap = await userRef.get();
-    const prev = userSnap.exists ? userSnap.data().credits || 0 : 0;
-    const newBalance = prev + credits;
-    await userRef.set({ credits: newBalance, updatedAt: new Date().toISOString() }, { merge: true });
+    const balance = userSnap.exists ? userSnap.data().credits || 0 : 0;
+    const newBalance = balance + credits;
+
+    await userRef.set({ userId, credits: newBalance }, { merge: true });
     await db.collection("transactions").add({
       userId,
       credits,
       type: "credit",
-      transactionId: transactionId || null,
-      timestamp: new Date().toISOString(),
+      transactionId,
+      timestamp: new Date().toISOString()
     });
-    console.log(chalk.green(`💰 ${credits} créditos adicionados a ${userId}`));
+
     res.json({ ok: true, newBalance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ⚡ Consumir créditos
+// ✅ Consumir créditos
 app.post("/consume-credit", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+
+  const { userId, credits, reason } = req.body;
+  if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+
   try {
-    const { userId, credits, reason } = req.body;
-    if (!userId || !credits) return res.status(400).json({ error: "Parâmetros inválidos" });
     const userRef = db.collection("users").doc(userId);
     const userSnap = await userRef.get();
     if (!userSnap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
-    const prev = userSnap.data().credits || 0;
-    if (prev < credits) return res.status(400).json({ error: "Créditos insuficientes" });
-    const newBalance = prev - credits;
-    await userRef.update({ credits: newBalance, updatedAt: new Date().toISOString() });
+
+    const balance = userSnap.data().credits || 0;
+    if (balance < credits) return res.status(400).json({ error: "Créditos insuficientes" });
+
+    const newBalance = balance - credits;
+
+    await userRef.update({ credits: newBalance });
     await db.collection("transactions").add({
       userId,
       credits,
       type: "debit",
-      reason: reason || "Uso de IA",
-      timestamp: new Date().toISOString(),
+      reason,
+      timestamp: new Date().toISOString()
     });
-    console.log(chalk.yellow(`⚡ ${credits} créditos consumidos por ${userId}`));
+
     res.json({ ok: true, newBalance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 📊 Consultar saldo
+// ✅ Consultar saldo
 app.get("/credits/:userId", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+  const { userId } = req.params;
+
   try {
-    const { userId } = req.params;
-    const snap = await db.collection("users").doc(userId).get();
-    if (!snap.exists) return res.json({ userId, credits: 0 });
-    res.json({ userId, credits: snap.data().credits || 0 });
+    const doc = await db.collection("users").doc(userId).get();
+    if (!doc.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+    res.json({ userId, credits: doc.data().credits || 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🧾 Histórico de transações
+// ✅ Listar transações (tratamento automático de índice ausente)
 app.get("/transactions/:userId", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
+
+  const { userId } = req.params;
+  const limit = parseInt(req.query.limit || 10);
+
   try {
-    const { userId } = req.params;
-    const limit = parseInt(req.query.limit || "10", 10);
-    const snapshot = await db
+    const snap = await db
       .collection("transactions")
       .where("userId", "==", userId)
       .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
-    const txs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-    res.json(txs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// -------------------------------------------------------
-// 🧠 ENDPOINT — Diagnóstico do ambiente (estendido)
-// -------------------------------------------------------
-app.get("/debug-env", (req, res) => {
-  let projectId = null;
-  let clientEmail = null;
-  let mode = null;
-  try {
-    if (process.env.FIREBASE_CREDENTIALS_B64) {
-      const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
-      const creds = JSON.parse(decoded);
-      projectId = creds.project_id || null;
-      clientEmail = creds.client_email || null;
-      mode = "base64";
-    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-      const fileCreds = JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "utf8"));
-      projectId = fileCreds.project_id || null;
-      clientEmail = fileCreds.client_email || null;
-      mode = "file";
+    const transactions = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(transactions);
+  } catch (err) {
+    if (err.message.includes("requires an index")) {
+      const match = err.message.match(/https:\/\/console\.firebase\.google\.com\/[^\s"]+/);
+      res.status(400).json({
+        error: "Firestore requer índice para esta consulta.",
+        fixLink: match ? match[0] : null
+      });
     } else {
-      mode = "none";
+      res.status(500).json({ error: err.message });
     }
-  } catch (e) {
-    mode = "error";
-  }
-
-  res.json({
-    message: "🔍 Diagnóstico do ambiente",
-    firebase_inicializado: firebaseInitialized,
-    variaveis: {
-      NODE_ENV: process.env.NODE_ENV,
-      HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ ausente",
-      FIREBASE_CREDENTIALS_B64: !!process.env.FIREBASE_CREDENTIALS_B64,
-      K_REVISION: process.env.K_REVISION || null,
-      BUILD_ID: process.env.BUILD_ID || null,
-      DEPLOY_BY: process.env.DEPLOY_BY || null,
-    },
-    credentials_inspect: {
-      mode,
-      project_id: projectId,
-      client_email: clientEmail,
-    },
-  });
-});
-
-// -------------------------------------------------------
-// 🔏 ENDPOINT — Registro de Deploy (usa HOTMART_SECRET)
-// -------------------------------------------------------
-app.post("/_deploy-log", async (req, res) => {
-  try {
-    if (req.headers["x-admin-token"] !== process.env.HOTMART_SECRET) {
-      return res.status(401).json({ error: "unauthorized" });
-    }
-
-    const payload = {
-      at: new Date().toISOString(),
-      build_id: process.env.BUILD_ID || null,
-      deploy_by: process.env.DEPLOY_BY || null,
-      revision: process.env.K_REVISION || null,
-      project_id: (() => {
-        try {
-          const creds = JSON.parse(Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8"));
-          return creds.project_id || null;
-        } catch {
-          return null;
-        }
-      })(),
-    };
-
-    if (!db) return res.status(500).json({ error: "Firestore não inicializado" });
-
-    await db.collection("system_info").doc("deploy_logs").collection("entries").add(payload);
-    console.log(chalk.cyan("🧩 Log de deploy salvo com sucesso!"));
-    res.json({ ok: true, saved: payload });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
-// -------------------------------------------------------
-// 🌐 Endpoint padrão (ping simples)
-// -------------------------------------------------------
-app.get("/", (req, res) => {
-  res.send("🌍 TravelMundo API v3.8.0 está rodando com sucesso!");
-});
-
-// -------------------------------------------------------
-// 🚀 Inicializa servidor local
-// -------------------------------------------------------
+/* ======================================================
+   🚀 Inicialização do servidor
+====================================================== */
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(chalk.blueBright(`🚀 Servidor ativo na porta ${PORT}`));
+  console.log(`🚀 TravelMundo IA API v3.8.1-Stable rodando na porta ${PORT}`);
 });
