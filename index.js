@@ -1,10 +1,11 @@
-// 🌍 TravelMundo API — v3.6.2 (Firebase + Hotmart + Histórico robusto)
-// ---------------------------------------------------------------------
-// ✅ Firebase Base64 + fallback arquivo
-// ✅ Registro de versão por revisão (de-duplicado via K_REVISION)
-// ✅ Histórico com transação (mantém 5 mais recentes, sem duplicar)
-// ✅ Metadados de deploy (build_id, deploy_by, revision)
-// ✅ Endpoints: /debug-env, /test-firebase, /version-info, /version-history, /admin/rebuild-version-history
+// 🌍 TravelMundo API — v3.6.3 (Firebase + Hotmart + Logs Estruturados + Healthz)
+// -----------------------------------------------------------------------------
+// ✅ Firebase Base64 + Fallback de arquivo físico
+// ✅ Registro robusto de versões (com deduplicação e histórico)
+// ✅ X-Request-Id em cada resposta
+// ✅ Health check endpoint (/healthz)
+// ✅ Logs JSON estruturados (para Cloud Logging)
+// ✅ Metadados: build_id, revision, deploy_by
 
 import express from "express";
 import cors from "cors";
@@ -13,6 +14,7 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
 import chalk from "chalk";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -20,11 +22,35 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-const API_VERSION = "3.6.2";
+const API_VERSION = "3.6.3";
 let firebaseInitialized = false;
 let db = null;
 
-// 🔥 1) Inicializa Firebase via Base64
+// 🧩 Middleware: adiciona X-Request-Id e log estruturado
+app.use((req, res, next) => {
+  const requestId = crypto.randomUUID();
+  res.setHeader("X-Request-Id", requestId);
+
+  const start = Date.now();
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        version: API_VERSION,
+        request_id: requestId,
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        duration_ms: duration,
+      })
+    );
+  });
+  next();
+});
+
+// 🔥 1️⃣ Inicializa Firebase via Base64
 try {
   if (process.env.FIREBASE_CREDENTIALS_B64) {
     const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
@@ -39,7 +65,7 @@ try {
   console.error(chalk.red("❌ Erro ao inicializar Firebase via Base64:"), err.message);
 }
 
-// 🔥 2) Fallback: arquivo físico
+// 🔥 2️⃣ Fallback: arquivo físico
 if (!firebaseInitialized) {
   const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
   if (fs.existsSync(serviceAccountPath)) {
@@ -61,14 +87,14 @@ if (!firebaseInitialized) {
 // ⚙️ Firestore
 if (firebaseInitialized) db = admin.firestore();
 
-// 🧠 Registro robusto de versão (uma por revisão)
+// 🧠 Registro de versão com deduplicação e histórico
 async function registrarVersao() {
   if (!db) return;
 
   const nowIso = new Date().toISOString();
   const revision = process.env.K_REVISION || "unknown";
   const build_id = process.env.BUILD_ID || null;
-  const deploy_by = process.env.DEPLOY_BY || "Fabricio Menezes"; // ajuste se quiser
+  const deploy_by = process.env.DEPLOY_BY || "Fabricio Menezes";
   const firebase_mode = process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "file";
 
   const versionData = {
@@ -82,37 +108,27 @@ async function registrarVersao() {
     deploy_by,
   };
 
-  // Evita duplicar por revisão: gravamos também em system_info/versions/<revision>
   const idxDocRef = db.collection("system_info").doc("version_info");
   const historyDocRef = db.collection("system_info").doc("version_history");
   const perRevisionRef = db.collection("system_info").doc(`version_rev_${revision}`);
 
   try {
     await db.runTransaction(async (tx) => {
-      // Se esta revisão já foi registrada, não duplica
       const revSnap = await tx.get(perRevisionRef);
-      if (!revSnap.exists) {
-        tx.set(perRevisionRef, versionData);
-      }
+      if (!revSnap.exists) tx.set(perRevisionRef, versionData);
 
-      // Atualiza o "version_info" com a versão atual (sempre)
       tx.set(idxDocRef, versionData);
 
-      // Atualiza histórico com deduplicação
       const histSnap = await tx.get(historyDocRef);
       const old = histSnap.exists ? (histSnap.data().history || []) : [];
 
-      // De-duplica por (revision) ou por (version + timestamp)
       const merged = [versionData, ...old].filter((item, i, arr) => {
         const firstIdx = arr.findIndex(
-          (x) =>
-            (x.revision && item.revision && x.revision === item.revision) ||
-            (x.version === item.version && x.timestamp === item.timestamp)
+          (x) => (x.revision && item.revision && x.revision === item.revision)
         );
-        return firstIdx === i; // mantém apenas a primeira ocorrência
+        return firstIdx === i;
       });
 
-      // Ordena desc por timestamp e limita a 5
       merged.sort((a, b) => (a.timestamp > b.timestamp ? -1 : 1));
       const trimmed = merged.slice(0, 5);
 
@@ -120,7 +136,6 @@ async function registrarVersao() {
     });
 
     console.log(chalk.magentaBright(`🧩 Versão registrada: v${API_VERSION} — rev=${revision}`));
-    console.log(chalk.yellowBright("📜 Histórico atualizado (máx 5, sem duplicatas)."));
   } catch (err) {
     console.error(chalk.red("❌ Falha ao registrar versão/histórico:"), err.message);
   }
@@ -128,12 +143,20 @@ async function registrarVersao() {
 
 if (firebaseInitialized) registrarVersao();
 
+// 🩺 Health Check
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    version: API_VERSION,
+    revision: process.env.K_REVISION || "unknown",
+    uptime_seconds: process.uptime(),
+  });
+});
+
 // 🧭 Diagnóstico
 app.get("/debug-env", (_req, res) => {
   res.json({
     message: "🔍 Diagnóstico do ambiente",
-    has_FIREBASE_SERVICE_ACCOUNT_JSON: fs.existsSync("./serviceAccountKey.json"),
-    GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS || "(não definido)",
     firebase_inicializado: firebaseInitialized,
     variaveis: {
       NODE_ENV: process.env.NODE_ENV,
@@ -146,11 +169,11 @@ app.get("/debug-env", (_req, res) => {
   });
 });
 
-// 🧪 Teste de Firestore
+// 🧪 Teste Firebase
 app.get("/test-firebase", async (_req, res) => {
-  if (!firebaseInitialized || !db) {
+  if (!firebaseInitialized || !db)
     return res.status(500).json({ error: "Firebase não configurado" });
-  }
+
   try {
     const testRef = db.collection("test_connection").doc("ping");
     await testRef.set({ ok: true, ts: new Date().toISOString() });
@@ -172,31 +195,12 @@ app.get("/version-info", async (_req, res) => {
   }
 });
 
-// 🧱 Histórico (5 últimas)
+// 🧱 Histórico
 app.get("/version-history", async (_req, res) => {
   try {
     const doc = await db.collection("system_info").doc("version_history").get();
     if (!doc.exists) return res.status(404).json({ error: "Nenhum histórico disponível" });
-    const hist = (doc.data().history || []).slice(0, 5);
-    res.json({ version: API_VERSION, history: hist });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 🛠️ Admin: rebuild do histórico (protegido por HOTMART_SECRET)
-app.post("/admin/rebuild-version-history", async (req, res) => {
-  try {
-    const token = req.headers["x-admin-token"];
-    if (!process.env.HOTMART_SECRET || token !== process.env.HOTMART_SECRET) {
-      return res.status(401).json({ error: "unauthorized" });
-    }
-
-    const historyRef = db.collection("system_info").doc("version_history");
-    await historyRef.set({ history: [] });
-    await registrarVersao(); // reinsere a versão atual como base
-    const snap = await historyRef.get();
-    res.json({ ok: true, new_history: snap.data() || {} });
+    res.json({ version: API_VERSION, history: doc.data().history });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
