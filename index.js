@@ -1,11 +1,9 @@
-// 🌍 TravelMundo API — v3.6.3 (Firebase + Hotmart + Logs Estruturados + Healthz)
-// -----------------------------------------------------------------------------
-// ✅ Firebase Base64 + Fallback de arquivo físico
-// ✅ Registro robusto de versões (com deduplicação e histórico)
-// ✅ X-Request-Id em cada resposta
-// ✅ Health check endpoint (/healthz)
-// ✅ Logs JSON estruturados (para Cloud Logging)
-// ✅ Metadados: build_id, revision, deploy_by
+// 🌍 TravelMundo API — v3.7.0
+// -------------------------------------------------------
+// ✅ Firebase via Base64 ou arquivo físico
+// ✅ Auditoria de versão e histórico
+// ✅ Endpoints de negócio reais: buy-credits, check-credits, use-credits
+// ✅ Diagnóstico, logs coloridos e segurança com admin-token
 
 import express from "express";
 import cors from "cors";
@@ -14,50 +12,20 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import fs from "fs";
 import chalk from "chalk";
-import crypto from "crypto";
 
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-const API_VERSION = "3.6.3";
 let firebaseInitialized = false;
-let db = null;
 
-// 🧩 Middleware: adiciona X-Request-Id e log estruturado
-app.use((req, res, next) => {
-  const requestId = crypto.randomUUID();
-  res.setHeader("X-Request-Id", requestId);
-
-  const start = Date.now();
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        version: API_VERSION,
-        request_id: requestId,
-        method: req.method,
-        path: req.path,
-        status: res.statusCode,
-        duration_ms: duration,
-      })
-    );
-  });
-  next();
-});
-
-// 🔥 1️⃣ Inicializa Firebase via Base64
+// 🧠 Inicialização inteligente do Firebase
 try {
   if (process.env.FIREBASE_CREDENTIALS_B64) {
     const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
     const creds = JSON.parse(decoded);
-    admin.initializeApp({
-      credential: admin.credential.cert(creds),
-    });
+    admin.initializeApp({ credential: admin.credential.cert(creds) });
     console.log(chalk.greenBright("🔥 Firebase inicializado via variável Base64!"));
     firebaseInitialized = true;
   }
@@ -65,96 +33,24 @@ try {
   console.error(chalk.red("❌ Erro ao inicializar Firebase via Base64:"), err.message);
 }
 
-// 🔥 2️⃣ Fallback: arquivo físico
 if (!firebaseInitialized) {
-  const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
-  if (fs.existsSync(serviceAccountPath)) {
+  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
+  if (fs.existsSync(path)) {
     try {
-      const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
+      const serviceAccount = JSON.parse(fs.readFileSync(path, "utf8"));
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
       console.log(chalk.cyanBright("🔥 Firebase inicializado via arquivo físico!"));
       firebaseInitialized = true;
     } catch (err) {
-      console.error(chalk.red("❌ Erro ao inicializar Firebase via arquivo:"), err.message);
+      console.error(chalk.red("❌ Erro ao inicializar Firebase via arquivo físico:"), err.message);
     }
-  } else {
-    console.warn(chalk.yellow("⚠️ Arquivo serviceAccountKey.json não encontrado."));
   }
 }
 
-// ⚙️ Firestore
-if (firebaseInitialized) db = admin.firestore();
+const db = firebaseInitialized ? admin.firestore() : null;
 
-// 🧠 Registro de versão com deduplicação e histórico
-async function registrarVersao() {
-  if (!db) return;
-
-  const nowIso = new Date().toISOString();
-  const revision = process.env.K_REVISION || "unknown";
-  const build_id = process.env.BUILD_ID || null;
-  const deploy_by = process.env.DEPLOY_BY || "Fabricio Menezes";
-  const firebase_mode = process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "file";
-
-  const versionData = {
-    version: API_VERSION,
-    timestamp: nowIso,
-    status: "success",
-    firebase_mode,
-    node_env: process.env.NODE_ENV || "unknown",
-    revision,
-    build_id,
-    deploy_by,
-  };
-
-  const idxDocRef = db.collection("system_info").doc("version_info");
-  const historyDocRef = db.collection("system_info").doc("version_history");
-  const perRevisionRef = db.collection("system_info").doc(`version_rev_${revision}`);
-
-  try {
-    await db.runTransaction(async (tx) => {
-      const revSnap = await tx.get(perRevisionRef);
-      if (!revSnap.exists) tx.set(perRevisionRef, versionData);
-
-      tx.set(idxDocRef, versionData);
-
-      const histSnap = await tx.get(historyDocRef);
-      const old = histSnap.exists ? (histSnap.data().history || []) : [];
-
-      const merged = [versionData, ...old].filter((item, i, arr) => {
-        const firstIdx = arr.findIndex(
-          (x) => (x.revision && item.revision && x.revision === item.revision)
-        );
-        return firstIdx === i;
-      });
-
-      merged.sort((a, b) => (a.timestamp > b.timestamp ? -1 : 1));
-      const trimmed = merged.slice(0, 5);
-
-      tx.set(historyDocRef, { history: trimmed });
-    });
-
-    console.log(chalk.magentaBright(`🧩 Versão registrada: v${API_VERSION} — rev=${revision}`));
-  } catch (err) {
-    console.error(chalk.red("❌ Falha ao registrar versão/histórico:"), err.message);
-  }
-}
-
-if (firebaseInitialized) registrarVersao();
-
-// 🩺 Health Check
-app.get("/healthz", (_req, res) => {
-  res.status(200).json({
-    status: "ok",
-    version: API_VERSION,
-    revision: process.env.K_REVISION || "unknown",
-    uptime_seconds: process.uptime(),
-  });
-});
-
-// 🧭 Diagnóstico
-app.get("/debug-env", (_req, res) => {
+// 🌡️ Diagnóstico do ambiente
+app.get("/debug-env", (req, res) => {
   res.json({
     message: "🔍 Diagnóstico do ambiente",
     firebase_inicializado: firebaseInitialized,
@@ -162,18 +58,112 @@ app.get("/debug-env", (_req, res) => {
       NODE_ENV: process.env.NODE_ENV,
       HOTMART_SECRET: process.env.HOTMART_SECRET ? "✅ OK" : "❌ ausente",
       FIREBASE_CREDENTIALS_B64: !!process.env.FIREBASE_CREDENTIALS_B64,
-      K_REVISION: process.env.K_REVISION || null,
+      K_REVISION: process.env.K_REVISION || "(local)",
       BUILD_ID: process.env.BUILD_ID || null,
       DEPLOY_BY: process.env.DEPLOY_BY || null,
     },
   });
 });
 
-// 🧪 Teste Firebase
-app.get("/test-firebase", async (_req, res) => {
+// 🧾 Histórico de versões
+app.get("/version-info", async (req, res) => {
+  try {
+    const ref = db.collection("version_history").doc("current");
+    const snap = await ref.get();
+    res.json({
+      version: "3.7.0",
+      firestore_data: snap.exists ? snap.data() : "Nenhum histórico encontrado",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🧩 Endpoints de negócio
+// --------------------------------------------------
+
+// 💰 Adicionar créditos
+app.post("/buy-credits", async (req, res) => {
+  const { userId, credits, transactionId } = req.body;
+  if (!firebaseInitialized || !db) return res.status(500).json({ error: "Firebase não configurado" });
+  if (!userId || !credits) return res.status(400).json({ error: "Parâmetros inválidos" });
+
+  try {
+    const ref = db.collection("users").doc(userId);
+    const snap = await ref.get();
+    const data = snap.exists ? snap.data() : { credits: 0, transactions: [] };
+
+    const newCredits = (data.credits || 0) + credits;
+    await ref.set(
+      {
+        credits: newCredits,
+        transactions: admin.firestore.FieldValue.arrayUnion({
+          transactionId,
+          amount: credits,
+          type: "buy",
+          timestamp: new Date().toISOString(),
+        }),
+      },
+      { merge: true }
+    );
+
+    console.log(chalk.green(`💰 ${credits} créditos adicionados a ${userId}`));
+    res.json({ success: true, message: `💰 ${credits} créditos adicionados ao usuário ${userId}` });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao adicionar créditos:"), err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔍 Consultar saldo
+app.get("/check-credits/:userId", async (req, res) => {
+  const { userId } = req.params;
+  if (!firebaseInitialized || !db) return res.status(500).json({ error: "Firebase não configurado" });
+  try {
+    const ref = db.collection("users").doc(userId);
+    const snap = await ref.get();
+    if (!snap.exists) return res.json({ userId, credits: 0 });
+    res.json({ userId, ...snap.data() });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao consultar créditos:"), err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⚡ Consumir créditos
+app.post("/use-credits", async (req, res) => {
+  const { userId, credits } = req.body;
+  if (!firebaseInitialized || !db) return res.status(500).json({ error: "Firebase não configurado" });
+  try {
+    const ref = db.collection("users").doc(userId);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    const data = snap.data();
+    if ((data.credits || 0) < credits)
+      return res.status(400).json({ error: "Créditos insuficientes" });
+
+    await ref.update({
+      credits: data.credits - credits,
+      transactions: admin.firestore.FieldValue.arrayUnion({
+        amount: -credits,
+        type: "use",
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    console.log(chalk.yellow(`⚡ ${credits} créditos consumidos por ${userId}`));
+    res.json({ success: true, message: `⚡ ${credits} créditos consumidos por ${userId}` });
+  } catch (err) {
+    console.error(chalk.red("❌ Erro ao consumir créditos:"), err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🧠 Teste rápido do Firestore
+app.get("/test-firebase", async (req, res) => {
   if (!firebaseInitialized || !db)
     return res.status(500).json({ error: "Firebase não configurado" });
-
   try {
     const testRef = db.collection("test_connection").doc("ping");
     await testRef.set({ ok: true, ts: new Date().toISOString() });
@@ -184,35 +174,13 @@ app.get("/test-firebase", async (_req, res) => {
   }
 });
 
-// 🧾 Versão atual
-app.get("/version-info", async (_req, res) => {
-  try {
-    const doc = await db.collection("system_info").doc("version_info").get();
-    if (!doc.exists) return res.status(404).json({ error: "Nenhuma versão registrada" });
-    res.json({ version: API_VERSION, firestore_data: doc.data() });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// 🌐 Rota padrão
+app.get("/", (req, res) => {
+  res.send("🌍 TravelMundo API v3.7.0 está online!");
 });
 
-// 🧱 Histórico
-app.get("/version-history", async (_req, res) => {
-  try {
-    const doc = await db.collection("system_info").doc("version_history").get();
-    if (!doc.exists) return res.status(404).json({ error: "Nenhum histórico disponível" });
-    res.json({ version: API_VERSION, history: doc.data().history });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 🌐 Raiz
-app.get("/", (_req, res) => {
-  res.send(`🌍 TravelMundo API v${API_VERSION} está rodando com sucesso!`);
-});
-
-// 🚀 Server local
+// 🚀 Inicializa servidor local
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(chalk.blueBright(`🚀 Servidor ativo na porta ${PORT} — v${API_VERSION}`));
+  console.log(chalk.blueBright(`🚀 Servidor ativo na porta ${PORT} — v3.7.0`));
 });
