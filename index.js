@@ -1,11 +1,9 @@
-// 🌍 TravelMundo API — v3.6.0 (Firebase + Hotmart + Versionamento)
-// ---------------------------------------------------------------
-// Recursos principais:
-// ✅ Inicialização inteligente do Firebase (arquivo físico, Secret Manager ou Base64)
-// ✅ Diagnóstico visual com logs coloridos
-// ✅ Endpoints de negócio e debug
-// ✅ Registro automático de versão no Firestore
-// ✅ Endpoint público /version-info
+// 🌍 TravelMundo API — v3.6.1 (Firebase + Hotmart + Histórico de Versões)
+// -------------------------------------------------------------------------
+// ✅ Firebase Base64 + Fallback de arquivo físico
+// ✅ Registro automático da versão atual no Firestore
+// ✅ Histórico de versões (mantém as 5 últimas)
+// ✅ Endpoints: /debug-env, /test-firebase, /version-info, /version-history
 
 import express from "express";
 import cors from "cors";
@@ -21,7 +19,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-const API_VERSION = "3.6.0";
+const API_VERSION = "3.6.1";
 let firebaseInitialized = false;
 let db = null;
 
@@ -62,26 +60,42 @@ if (!firebaseInitialized) {
 // ⚙️ Firestore
 if (firebaseInitialized) db = admin.firestore();
 
-// 🧠 3️⃣ Registro automático da versão atual no Firestore
+// 🧠 3️⃣ Registro e histórico automático de versões
 async function registrarVersao() {
   if (!db) return;
+
+  const versionData = {
+    version: API_VERSION,
+    timestamp: new Date().toISOString(),
+    status: "success",
+    firebase_mode: process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "file",
+    node_env: process.env.NODE_ENV || "unknown",
+  };
+
   try {
-    const ref = db.collection("system_info").doc("version_info");
-    const data = {
-      version: API_VERSION,
-      timestamp: new Date().toISOString(),
-      status: "success",
-      firebase_mode: process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "file",
-      node_env: process.env.NODE_ENV || "unknown",
-    };
-    await ref.set(data);
+    const infoRef = db.collection("system_info").doc("version_info");
+    await infoRef.set(versionData);
     console.log(chalk.magentaBright(`🧩 Versão registrada no Firestore: v${API_VERSION}`));
+
+    // Adiciona ao histórico
+    const historyRef = db.collection("system_info").doc("version_history");
+    const snap = await historyRef.get();
+    const history = snap.exists ? snap.data().history || [] : [];
+
+    // Adiciona a nova versão no topo
+    history.unshift(versionData);
+
+    // Mantém apenas as 5 últimas
+    const trimmed = history.slice(0, 5);
+
+    await historyRef.set({ history: trimmed });
+    console.log(chalk.yellowBright("📜 Histórico de versões atualizado (últimas 5)."));
   } catch (err) {
-    console.error(chalk.red("❌ Falha ao registrar versão no Firestore:"), err.message);
+    console.error(chalk.red("❌ Falha ao registrar versão/histórico no Firestore:"), err.message);
   }
 }
 
-// Chama o registro assim que o app inicializa
+// Chama o registro ao inicializar
 if (firebaseInitialized) registrarVersao();
 
 // 🧭 ENDPOINT — Diagnóstico do ambiente
@@ -99,14 +113,6 @@ app.get("/debug-env", (req, res) => {
   });
 });
 
-// 🧾 ENDPOINT — Verificação da chave Base64
-app.get("/debug-secret", (req, res) => {
-  if (!process.env.FIREBASE_CREDENTIALS_B64) {
-    return res.status(404).json({ error: "Variável FIREBASE_CREDENTIALS_B64 não encontrada" });
-  }
-  res.json({ status: "ok", length: process.env.FIREBASE_CREDENTIALS_B64.length });
-});
-
 // 🧪 ENDPOINT — Teste de Firestore
 app.get("/test-firebase", async (req, res) => {
   if (!firebaseInitialized || !db) {
@@ -122,14 +128,23 @@ app.get("/test-firebase", async (req, res) => {
   }
 });
 
-// 🧱 ENDPOINT — Histórico de versões (novo)
+// 🧾 ENDPOINT — Versão atual
 app.get("/version-info", async (req, res) => {
   try {
     const doc = await db.collection("system_info").doc("version_info").get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: "Nenhuma versão registrada" });
-    }
+    if (!doc.exists) return res.status(404).json({ error: "Nenhuma versão registrada" });
     res.json({ version: API_VERSION, firestore_data: doc.data() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🧱 ENDPOINT — Histórico de versões
+app.get("/version-history", async (req, res) => {
+  try {
+    const doc = await db.collection("system_info").doc("version_history").get();
+    if (!doc.exists) return res.status(404).json({ error: "Nenhum histórico disponível" });
+    res.json({ version: API_VERSION, history: doc.data().history });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
