@@ -1,13 +1,13 @@
-// 🌍 TravelMundo API — v3.9.1 Stable
+// 🌍 TravelMundo API — v3.9.2 (Stable)
 // -------------------------------------------------------
 // Recursos principais:
-// ✔️ Inicialização inteligente do Firebase (Base64 ou arquivo físico)
-// ✔️ Diagnóstico completo (/debug-env)
-// ✔️ Registro de deploy (/ _deploy-log)
-// ✔️ Endpoints de negócio (créditos + transações)
-// ✔️ Logs coloridos (chalk)
-// ✔️ Cloud Run ready (PORT dinâmico)
-// ✔️ Hotmart Secret compatível
+// ✅ Inicialização inteligente do Firebase (Base64 ou Arquivo)
+// ✅ Diagnóstico avançado do ambiente (/debug-env)
+// ✅ Endpoints de crédito: buy-credits, consume-credit, credits, transactions
+// ✅ Registro automático de deploy (/ _deploy-log)
+// ✅ Versionamento: /version-info e /version-history
+// ✅ Sanitização de payload (sem valores undefined para Firestore)
+// -------------------------------------------------------
 
 import express from "express";
 import cors from "cors";
@@ -18,19 +18,13 @@ import fs from "fs";
 import chalk from "chalk";
 
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
 let firebaseInitialized = false;
-let firebaseMode = "none";
-let firebaseProjectId = null;
-let firebaseClientEmail = null;
 
-// -------------------------------------------------------------
-// 🔥 1) Inicialização do Firebase (Base64 > arquivo físico)
-// -------------------------------------------------------------
+// 🔥 1) TENTAR INICIALIZAR VIA BASE64
 try {
   if (process.env.FIREBASE_CREDENTIALS_B64) {
     const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
@@ -40,48 +34,52 @@ try {
       credential: admin.credential.cert(creds),
     });
 
-    firebaseInitialized = true;
-    firebaseMode = "base64";
-    firebaseProjectId = creds.project_id || null;
-    firebaseClientEmail = creds.client_email || null;
-
     console.log(chalk.green("🔥 Firebase inicializado via Base64."));
+    firebaseInitialized = true;
   }
 } catch (err) {
-  console.log(chalk.red("❌ Erro ao inicializar via Base64:", err.message));
+  console.error(chalk.red("❌ Erro ao inicializar via Base64:"), err.message);
 }
 
+// 🔥 2) SE FALHAR, TENTAR VIA ARQUIVO FÍSICO
 if (!firebaseInitialized) {
-  const path = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
+  const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
 
-  if (fs.existsSync(path)) {
+  if (fs.existsSync(serviceAccountPath)) {
     try {
-      const creds = JSON.parse(fs.readFileSync(path, "utf8"));
-
+      const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
       admin.initializeApp({
-        credential: admin.credential.cert(creds),
+        credential: admin.credential.cert(serviceAccount),
       });
 
-      firebaseInitialized = true;
-      firebaseMode = "file";
-      firebaseProjectId = creds.project_id || null;
-      firebaseClientEmail = creds.client_email || null;
-
       console.log(chalk.cyan("🔥 Firebase inicializado via arquivo físico."));
+      firebaseInitialized = true;
     } catch (err) {
-      console.log(chalk.red("❌ Erro ao inicializar via arquivo:", err.message));
+      console.error(chalk.red("❌ Erro ao inicializar via arquivo físico:"), err.message);
     }
   } else {
-    console.log(chalk.yellow("⚠️ Nenhum método de inicialização Firebase encontrado."));
+    console.warn(chalk.yellow("⚠️ Arquivo serviceAccountKey.json não encontrado."));
   }
 }
 
+// 🔥 Firestore
 const db = firebaseInitialized ? admin.firestore() : null;
 
-// -------------------------------------------------------------
-// 🧠 2) Endpoint de Diagnóstico Completo
-// -------------------------------------------------------------
+// -------------------------------------------------------
+// 🧠 ENDPOINT: DEBUG DO AMBIENTE
+// -------------------------------------------------------
 app.get("/debug-env", (req, res) => {
+  let projectId = null;
+  let clientEmail = null;
+
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8")
+    );
+    projectId = decoded.project_id;
+    clientEmail = decoded.client_email;
+  } catch {}
+
   res.json({
     message: "🔍 Diagnóstico do ambiente",
     firebase_inicializado: firebaseInitialized,
@@ -94,63 +92,94 @@ app.get("/debug-env", (req, res) => {
       DEPLOY_BY: process.env.DEPLOY_BY || null,
     },
     credentials_inspect: {
-      mode: firebaseMode,
-      project_id: firebaseProjectId,
-      client_email: firebaseClientEmail,
+      mode: process.env.FIREBASE_CREDENTIALS_B64 ? "base64" : "file",
+      project_id: projectId,
+      client_email: clientEmail,
     },
   });
 });
 
-// -------------------------------------------------------------
-// 📘 3) Registro do Deploy no Firestore
-// -------------------------------------------------------------
-app.post("/_deploy-log", async (req, res) => {
-  if (!db)
-    return res.status(500).json({ error: "Firebase não inicializado" });
-
+// -------------------------------------------------------
+// 🧠 ENDPOINT: VERSION INFO
+// -------------------------------------------------------
+app.get("/version-info", async (req, res) => {
   try {
-    const { version, buildId, deployBy } = req.body;
+    const snap = await db.collection("system_info").doc("deploy_log").get();
+    const data = snap.exists ? snap.data() : null;
 
-    await db.collection("system_info")
-      .doc("deploy_log")
-      .set(
-        {
-          lastDeploy: new Date().toISOString(),
-          version,
-          buildId,
-          deployBy,
-          firebaseMode,
-          firebaseProjectId,
-          firebaseClientEmail,
-        },
-        { merge: true }
-      );
-
-    res.json({ ok: true, message: "Deploy log registrado com sucesso." });
+    res.json({
+      version: data?.version || "unknown",
+      firestore_data: data,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// -------------------------------------------------------------
-// 💰 4) Endpoints de Créditos
-// -------------------------------------------------------------
-
-// Adicionar créditos
-app.post("/buy-credits", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firebase não inicializado" });
-
-  const { userId, credits, transactionId } = req.body;
-
+// -------------------------------------------------------
+// 🧠 ENDPOINT: VERSION HISTORY
+// -------------------------------------------------------
+app.get("/version-history", async (req, res) => {
   try {
-    const userRef = db.collection("users").doc(userId);
-    const userSnap = await userRef.get();
-    const currentCredits = userSnap.exists ? userSnap.data().credits || 0 : 0;
+    const snap = await db.collection("system_info").doc("version_history").get();
+    const data = snap.exists ? snap.data() : { history: [] };
 
-    const newBalance = currentCredits + credits;
+    res.json({
+      version: data.history?.[0]?.version || "unknown",
+      history: data.history || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------
+// 🧱 ENDPOINT: REGISTRO DE DEPLOY (_deploy-log)
+// Corrigido para nunca enviar undefined ao Firestore
+// -------------------------------------------------------
+app.post("/_deploy-log", async (req, res) => {
+  try {
+    const { version, buildId, deployBy } = req.body;
+
+    // Sanitização: remove undefined
+    const payload = {
+      lastDeploy: new Date().toISOString(),
+      version: version || "unknown",
+      buildId: buildId || "none",
+      deployBy: deployBy || "unknown",
+    };
+
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+    await db.collection("system_info").doc("deploy_log").set(payload, { merge: true });
+
+    res.json({ ok: true, saved: payload });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------
+// 💰 ENDPOINT: CREDITAR CRÉDITOS
+// -------------------------------------------------------
+app.post("/buy-credits", async (req, res) => {
+  try {
+    const { userId, credits, transactionId } = req.body;
+    if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+
+    const userRef = db.collection("users").doc(userId);
+    const snap = await userRef.get();
+
+    let current = 0;
+    if (snap.exists) current = snap.data().credits || 0;
+
+    const newBalance = current + credits;
 
     await userRef.set(
-      { credits: newBalance, updatedAt: new Date().toISOString() },
+      {
+        credits: newBalance,
+        updatedAt: new Date().toISOString(),
+      },
       { merge: true }
     );
 
@@ -168,27 +197,27 @@ app.post("/buy-credits", async (req, res) => {
   }
 });
 
-// Consumir créditos
+// -------------------------------------------------------
+// 💸 ENDPOINT: CONSUMIR CRÉDITOS
+// -------------------------------------------------------
 app.post("/consume-credit", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firebase não inicializado" });
-
-  const { userId, credits, reason } = req.body;
-
   try {
+    const { userId, credits, reason } = req.body;
+    if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+
     const userRef = db.collection("users").doc(userId);
-    const doc = await userRef.get();
-    const current = doc.exists ? doc.data().credits || 0 : 0;
+    const snap = await userRef.get();
 
-    if (current < credits) {
-      return res.status(400).json({ error: "Créditos insuficientes" });
-    }
+    const current = snap.exists ? snap.data().credits || 0 : 0;
+    const newBalance = Math.max(0, current - credits);
 
-    const newBalance = current - credits;
-
-    await userRef.update({
-      credits: newBalance,
-      updatedAt: new Date().toISOString(),
-    });
+    await userRef.set(
+      {
+        credits: newBalance,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
 
     await db.collection("transactions").add({
       userId,
@@ -204,35 +233,32 @@ app.post("/consume-credit", async (req, res) => {
   }
 });
 
-// Consultar saldo
+// -------------------------------------------------------
+// 📊 ENDPOINT: SALDO DO USUÁRIO
+// -------------------------------------------------------
 app.get("/credits/:userId", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firebase não inicializado" });
-
   try {
     const snap = await db.collection("users").doc(req.params.userId).get();
-    res.json({
-      userId: req.params.userId,
-      credits: snap.exists ? snap.data().credits || 0 : 0,
-    });
+    const data = snap.exists ? snap.data() : { credits: 0 };
+    res.json({ userId: req.params.userId, credits: data.credits || 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Listar transações
+// -------------------------------------------------------
+// 📜 ENDPOINT: HISTÓRICO DO USUÁRIO
+// -------------------------------------------------------
 app.get("/transactions/:userId", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firebase não inicializado" });
-
-  const limit = Number(req.query.limit) || 20;
-
   try {
-    const snap = await db
+    const limit = parseInt(req.query.limit || 20);
+    const col = db
       .collection("transactions")
       .where("userId", "==", req.params.userId)
       .orderBy("timestamp", "desc")
-      .limit(limit)
-      .get();
+      .limit(limit);
 
+    const snap = await col.get();
     const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     res.json(list);
@@ -241,16 +267,16 @@ app.get("/transactions/:userId", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------
-// 🌐 Home
-// -------------------------------------------------------------
+// -------------------------------------------------------
+// 🌐 ROOT ENDPOINT
+// -------------------------------------------------------
 app.get("/", (req, res) => {
-  res.send("🌍 TravelMundo API — v3.9.1 está online.");
+  res.send("🌍 TravelMundo API v3.9.2 — online");
 });
 
-// -------------------------------------------------------------
-// 🚀 Start Server (Cloud Run)
-// -------------------------------------------------------------
+// -------------------------------------------------------
+// 🚀 START
+// -------------------------------------------------------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(chalk.blue(`🚀 Servidor ativo na porta ${PORT}`));
