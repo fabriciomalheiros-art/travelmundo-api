@@ -1,146 +1,154 @@
 #!/bin/bash
-# ---------------------------------------------------------
-# 🚀 TravelMundo IA — Deploy Automático Premium
-# Versão: v3.9.7-FULL
-# Atualizado: 19/11/2025
-#
-# 📌 Recursos:
-# ✔ Versionamento automático (VERSION.txt)
-# ✔ Commit + Push automático para GitHub
-# ✔ Build no Cloud Build com captura correta do BUILD_ID
-# ✔ Deploy no Cloud Run
-# ✔ Registro do deploy no Firestore via /_deploy-log
-# ✔ Diagnóstico final via /debug-env
-# ---------------------------------------------------------
 
+# =========================================================
+# 🚀 TravelMundo IA — Ultra Premium CI/CD Pipeline
+# Versão: v4.0.0
+# Autor: Fabricio & ChatGPT — Engenharia Conjunta
+# =========================================================
+
+# 🟦 CORES
+BLUE="\033[1;34m"
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+YELLOW="\033[1;33m"
+CYAN="\033[1;36m"
+RESET="\033[0m"
+
+# 🌀 ANIMAÇÃO (loading)
+loading() {
+  local msg=$1
+  local i=0
+  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+  tput civis
+  while kill -0 $! 2>/dev/null; do
+    printf "\r${CYAN}${spin:i++%${#spin}:1}${RESET} %s" "$msg"
+    sleep 0.12
+  done
+  tput cnorm
+  printf "\r${GREEN}✔${RESET} %s\n" "$msg"
+}
+
+# 🟦 CONFIGURAÇÃO
 SERVICE="travelmundo-api-prod"
 REGION="us-west1"
 PROJECT="gen-lang-client-0394942372"
 IMAGE="us-west1-docker.pkg.dev/$PROJECT/travelmundo-api/travelmundo-api:latest"
+SERVICE_URL="https://$SERVICE-448904673707.$REGION.run.app"
 
-echo "🚀 Iniciando pipeline completo de deploy TravelMundo IA"
+echo -e "${BLUE}🚀 Iniciando Ultra Deploy TravelMundo IA — v4.0${RESET}"
 echo "──────────────────────────────────────────────"
 
+# =========================================================
+# 0️⃣ CHECAR PROJETO
+# =========================================================
+echo -e "${YELLOW}🧭 Verificando projeto ativo...${RESET}"
+gcloud config set project $PROJECT >/dev/null 2>&1 &
+loading "Projeto configurado: $PROJECT"
 
-# ---------------------------------------------------------
-# 0️⃣ GARANTE PROJETO CORRETO
-# ---------------------------------------------------------
+# =========================================================
+# 1️⃣ VALIDAR SECRETS
+# =========================================================
+echo -e "${YELLOW}🔐 Validando secrets...${RESET}"
 
-gcloud config set project $PROJECT >/dev/null 2>&1
-echo "✔ Projeto configurado: $PROJECT"
+if ! gcloud secrets describe firebase-service-account >/dev/null 2>&1; then
+  echo -e "${RED}❌ ERRO: Secret firebase-service-account NÃO existe!${RESET}"
+  exit 1
+fi
 
+if ! gcloud secrets describe HOTMART_SECRET >/dev/null 2>&1; then
+  echo -e "${RED}❌ ERRO: Secret HOTMART_SECRET NÃO existe!${RESET}"
+  exit 1
+fi
 
-# ---------------------------------------------------------
-# 1️⃣ VERSIONAMENTO AUTOMÁTICO
-# ---------------------------------------------------------
+echo -e "${GREEN}✔ Secrets OK${RESET}"
+
+# =========================================================
+# 2️⃣ VERSIONAMENTO AUTOMÁTICO
+# =========================================================
+echo -e "${YELLOW}📦 Atualizando versão...${RESET}"
 
 if [ ! -f VERSION.txt ]; then
-  echo "3.9.0" > VERSION.txt
+  echo "4.0.0" > VERSION.txt
 fi
 
 CURRENT_VERSION=$(cat VERSION.txt)
-
 IFS='.' read -r MAJ MIN PATCH <<< "$CURRENT_VERSION"
 NEXT_PATCH=$((PATCH + 1))
 NEW_VERSION="$MAJ.$MIN.$NEXT_PATCH"
-
 echo "$NEW_VERSION" > VERSION.txt
 
-echo "📦 Nova versão detectada: $NEW_VERSION"
-echo "──────────────────────────────────────────────"
+echo -e "${GREEN}✔ Nova versão: $NEW_VERSION${RESET}"
 
-
-# ---------------------------------------------------------
-# 1️⃣.1 COMMIT + PUSH AUTOMÁTICO
-# ---------------------------------------------------------
-
-echo "📝 Atualizando GitHub..."
+# =========================================================
+# 3️⃣ GIT — PUSH AUTOMÁTICO
+# =========================================================
+echo -e "${YELLOW}⬆ Enviando commit para GitHub...${RESET}"
 
 git add .
 git commit -m "auto: deploy versão $NEW_VERSION" 2>/dev/null
+git push origin main &
+loading "Código sincronizado com GitHub"
 
-if [ $? -ne 0 ]; then
-  echo "ℹ Nenhum commit novo (OK)"
-else
-  echo "✔ Commit criado"
-fi
+# =========================================================
+# 4️⃣ BUILD + ROLLBACK AUTOMÁTICO
+# =========================================================
+echo -e "${YELLOW}🏗️ Iniciando Cloud Build...${RESET}"
 
-git push origin main
-echo "✔ GitHub sincronizado"
-echo "──────────────────────────────────────────────"
+set -e
+BUILD_OUTPUT=$(gcloud builds submit --tag "$IMAGE" --format=json) || {
+  echo -e "${RED}❌ BUILD FALHOU — ROLLBACK ATIVADO${RESET}"
+  git reset --hard HEAD~1
+  exit 1
+}
 
-
-# ---------------------------------------------------------
-# 2️⃣ BUILD NO CLOUD BUILD + CAPTURA REAL DO BUILD_ID
-# ---------------------------------------------------------
-
-echo "🏗️ Iniciando Build no Google Cloud Build..."
-
-BUILD_OUTPUT=$(gcloud builds submit --tag "$IMAGE" --format=json)
-
-# Extrai o ID REAL do build
 BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -oP '"id":\s*"\K[^"]+')
+echo -e "${GREEN}✔ BUILD_ID: $BUILD_ID${RESET}"
 
-if [ -z "$BUILD_ID" ]; then
-  BUILD_ID="unknown"
-  echo "⚠ Não foi possível detectar BUILD_ID (mas o build funcionou)"
-else
-  echo "🧱 BUILD_ID detectado: $BUILD_ID"
+# =========================================================
+# 5️⃣ DEPLOY + ROLLBACK EM CASO DE FALHA
+# =========================================================
+echo -e "${YELLOW}☁️ Realizando deploy...${RESET}"
+
+if ! gcloud run deploy "$SERVICE" \
+    --image "$IMAGE" \
+    --region "$REGION" \
+    --allow-unauthenticated >/dev/null 2>&1; then
+  echo -e "${RED}❌ DEPLOY FALHOU — ROLLBACK DA IMAGEM${RESET}"
+  gcloud container images delete "$IMAGE" --quiet
+  exit 1
 fi
 
-echo "──────────────────────────────────────────────"
+echo -e "${GREEN}✔ Deploy concluído${RESET}"
 
-
-# ---------------------------------------------------------
-# 3️⃣ DEPLOY NO CLOUD RUN
-# ---------------------------------------------------------
-
-echo "☁️ Realizando deploy no Cloud Run..."
-
-gcloud run deploy "$SERVICE" \
-  --image "$IMAGE" \
-  --region "$REGION" \
-  --allow-unauthenticated
-
-SERVICE_URL="https://$SERVICE-448904673707.$REGION.run.app"
-ALT_URL="https://$SERVICE-ycerivyj5a-uw.a.run.app"
-
-echo "🌍 Serviço ativo em: $ALT_URL"
-echo "──────────────────────────────────────────────"
-
-
-# ---------------------------------------------------------
-# 4️⃣ REGISTRA DEPLOY NO FIRESTORE
-# ---------------------------------------------------------
-
-echo "🧩 Registrando metadados do deploy no Firestore..."
+# =========================================================
+# 6️⃣ REGISTRO NO FIRESTORE
+# =========================================================
+echo -e "${YELLOW}🧩 Registrando deploy no Firestore...${RESET}"
 
 DEPLOY_BY=$(git config user.email)
-if [ -z "$DEPLOY_BY" ]; then DEPLOY_BY="unknown"; fi
 
 curl -s -X POST "$SERVICE_URL/_deploy-log" \
   -H "Content-Type: application/json" \
-  -d "{\"version\":\"$NEW_VERSION\",\"buildId\":\"$BUILD_ID\",\"deployBy\":\"$DEPLOY_BY\"}"
+  -d "{\"version\":\"$NEW_VERSION\",\"buildId\":\"$BUILD_ID\",\"deployBy\":\"$DEPLOY_BY\"}" >/dev/null
 
-echo ""
-echo "✔ Registro salvo no Firestore"
-echo "──────────────────────────────────────────────"
+echo -e "${GREEN}✔ Registro salvo no Firestore${RESET}"
 
-
-# ---------------------------------------------------------
-# 5️⃣ DIAGNÓSTICO FINAL
-# ---------------------------------------------------------
-
-echo "🔍 Verificando ambiente com /debug-env..."
-
+# =========================================================
+# 7️⃣ DIAGNÓSTICO FINAL
+# =========================================================
+echo -e "${YELLOW}🔍 Diagnóstico /debug-env...${RESET}"
 curl -s "$SERVICE_URL/debug-env"
 echo ""
-echo "──────────────────────────────────────────────"
 
-echo "🎯 Deploy v$NEW_VERSION finalizado com sucesso!"
-echo "✔ Build: $BUILD_ID"
-echo "✔ Região: $REGION"
-echo "✔ Serviço: $SERVICE"
-echo "✔ URL: $ALT_URL"
-echo "──────────────────────────────────────────────"
-
+# =========================================================
+# 8️⃣ FINAL CINEMATOGRÁFICO
+# =========================================================
+echo -e "
+${BLUE}═══════════════════════════════════════════════
+🎉 DEPLOY COMPLETO — TravelMundo IA v$NEW_VERSION
+🧱 Build ID: $BUILD_ID
+☁️ Cloud Run: $SERVICE
+🌍 URL: $SERVICE_URL
+═══════════════════════════════════════════════${RESET}
+"
