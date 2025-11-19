@@ -1,12 +1,14 @@
-// 🌍 TravelMundo API — v3.9.2 (Stable)
+// 🌍 TravelMundo API — v3.9.9 (Stable Updated)
 // -------------------------------------------------------
-// Recursos principaiss:
+// Recursos principais adicionados nesta versão:
 // ✅ Inicialização inteligente do Firebase (Base64 ou Arquivo)
 // ✅ Diagnóstico avançado do ambiente (/debug-env)
-// ✅ Endpoints de crédito: buy-credits, consume-credit, credits, transactions
+// ✅ Créditos: buy, consume, saldo, histórico
 // ✅ Registro automático de deploy (/ _deploy-log)
 // ✅ Versionamento: /version-info e /version-history
-// ✅ Sanitização de payload (sem valores undefined para Firestore)
+// ✅ Sanitização Firestore
+// ✅ ensureUserInitialized() — créditos iniciais
+// ✅ /sessions/generate — débito automático + logging
 // -------------------------------------------------------
 
 import express from "express";
@@ -24,10 +26,15 @@ app.use(bodyParser.json());
 
 let firebaseInitialized = false;
 
-// 🔥 1) TENTAR INICIALIZAR VIA BASE64
+// =======================================================
+// 🔥 1) Firebase via BASE64
+// =======================================================
 try {
   if (process.env.FIREBASE_CREDENTIALS_B64) {
-    const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8");
+    const decoded = Buffer.from(
+      process.env.FIREBASE_CREDENTIALS_B64,
+      "base64"
+    ).toString("utf8");
     const creds = JSON.parse(decoded);
 
     admin.initializeApp({
@@ -41,13 +48,19 @@ try {
   console.error(chalk.red("❌ Erro ao inicializar via Base64:"), err.message);
 }
 
-// 🔥 2) SE FALHAR, TENTAR VIA ARQUIVO FÍSICO
+// =======================================================
+// 🔥 2) Fallback: Firebase via ARQUIVO
+// =======================================================
 if (!firebaseInitialized) {
-  const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "./serviceAccountKey.json";
+  const serviceAccountPath =
+    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+    "./serviceAccountKey.json";
 
   if (fs.existsSync(serviceAccountPath)) {
     try {
-      const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+      const serviceAccount = JSON.parse(
+        fs.readFileSync(serviceAccountPath, "utf8")
+      );
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
@@ -55,26 +68,61 @@ if (!firebaseInitialized) {
       console.log(chalk.cyan("🔥 Firebase inicializado via arquivo físico."));
       firebaseInitialized = true;
     } catch (err) {
-      console.error(chalk.red("❌ Erro ao inicializar via arquivo físico:"), err.message);
+      console.error(
+        chalk.red("❌ Erro ao inicializar via arquivo físico:"),
+        err.message
+      );
     }
   } else {
     console.warn(chalk.yellow("⚠️ Arquivo serviceAccountKey.json não encontrado."));
   }
 }
 
-// 🔥 Firestore
 const db = firebaseInitialized ? admin.firestore() : null;
 
-// -------------------------------------------------------
-// 🧠 ENDPOINT: DEBUG DO AMBIENTE
-// -------------------------------------------------------
+// =======================================================
+// 🧱 Função auxiliar: Inicialização automática do usuário
+// =======================================================
+async function ensureUserInitialized(userId) {
+  const userRef = db.collection("users").doc(userId);
+  const snap = await userRef.get();
+
+  if (!snap.exists) {
+    const payload = {
+      userId,
+      credits: 2, // 2 créditos iniciais
+      plan: "free",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    await userRef.set(payload);
+
+    await db.collection("transactions").add({
+      userId,
+      type: "credit",
+      amount: 2,
+      source: "free-starter",
+      timestamp: new Date(),
+      metadata: { reason: "signup_free_credits" },
+    });
+
+    console.log(chalk.green(`👤 Usuário inicializado: ${userId}`));
+  }
+}
+
+// =======================================================
+// 🧠 DEBUG ENV
+// =======================================================
 app.get("/debug-env", (req, res) => {
   let projectId = null;
   let clientEmail = null;
 
   try {
     const decoded = JSON.parse(
-      Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString("utf8")
+      Buffer.from(process.env.FIREBASE_CREDENTIALS_B64, "base64").toString(
+        "utf8"
+      )
     );
     projectId = decoded.project_id;
     clientEmail = decoded.client_email;
@@ -99,9 +147,9 @@ app.get("/debug-env", (req, res) => {
   });
 });
 
-// -------------------------------------------------------
-// 🧠 ENDPOINT: VERSION INFO
-// -------------------------------------------------------
+// =======================================================
+// 🧠 VERSION INFO
+// =======================================================
 app.get("/version-info", async (req, res) => {
   try {
     const snap = await db.collection("system_info").doc("deploy_log").get();
@@ -116,9 +164,9 @@ app.get("/version-info", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 🧠 ENDPOINT: VERSION HISTORY
-// -------------------------------------------------------
+// =======================================================
+// 🧠 VERSION HISTORY
+// =======================================================
 app.get("/version-history", async (req, res) => {
   try {
     const snap = await db.collection("system_info").doc("version_history").get();
@@ -133,15 +181,13 @@ app.get("/version-history", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 🧱 ENDPOINT: REGISTRO DE DEPLOY (_deploy-log)
-// Corrigido para nunca enviar undefined ao Firestore
-// -------------------------------------------------------
+// =======================================================
+// 🧱 DEPLOY LOG
+// =======================================================
 app.post("/_deploy-log", async (req, res) => {
   try {
     const { version, buildId, deployBy } = req.body;
 
-    // Sanitização: remove undefined
     const payload = {
       lastDeploy: new Date().toISOString(),
       version: version || "unknown",
@@ -149,9 +195,10 @@ app.post("/_deploy-log", async (req, res) => {
       deployBy: deployBy || "unknown",
     };
 
-    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-
-    await db.collection("system_info").doc("deploy_log").set(payload, { merge: true });
+    await db
+      .collection("system_info")
+      .doc("deploy_log")
+      .set(payload, { merge: true });
 
     res.json({ ok: true, saved: payload });
   } catch (err) {
@@ -159,19 +206,18 @@ app.post("/_deploy-log", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 💰 ENDPOINT: CREDITAR CRÉDITOS
-// -------------------------------------------------------
+// =======================================================
+// 💰 BUY CREDITS
+// =======================================================
 app.post("/buy-credits", async (req, res) => {
   try {
     const { userId, credits, transactionId } = req.body;
-    if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+    if (!userId || !credits)
+      return res.status(400).json({ error: "userId e credits obrigatórios" });
 
     const userRef = db.collection("users").doc(userId);
     const snap = await userRef.get();
-
-    let current = 0;
-    if (snap.exists) current = snap.data().credits || 0;
+    const current = snap.exists ? snap.data().credits || 0 : 0;
 
     const newBalance = current + credits;
 
@@ -197,19 +243,20 @@ app.post("/buy-credits", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 💸 ENDPOINT: CONSUMIR CRÉDITOS
-// -------------------------------------------------------
+// =======================================================
+// 💸 CONSUME CREDITS
+// =======================================================
 app.post("/consume-credit", async (req, res) => {
   try {
     const { userId, credits, reason } = req.body;
-    if (!userId || !credits) return res.status(400).json({ error: "userId e credits obrigatórios" });
+    if (!userId || !credits)
+      return res.status(400).json({ error: "userId e credits obrigatórios" });
 
     const userRef = db.collection("users").doc(userId);
     const snap = await userRef.get();
-
     const current = snap.exists ? snap.data().credits || 0 : 0;
-    const newBalance = Math.max(0, current - credits);
+
+    const newBalance = Math.max(current - credits, 0);
 
     await userRef.set(
       {
@@ -233,9 +280,9 @@ app.post("/consume-credit", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 📊 ENDPOINT: SALDO DO USUÁRIO
-// -------------------------------------------------------
+// =======================================================
+// 📊 CREDITS BALANCE
+// =======================================================
 app.get("/credits/:userId", async (req, res) => {
   try {
     const snap = await db.collection("users").doc(req.params.userId).get();
@@ -246,9 +293,9 @@ app.get("/credits/:userId", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 📜 ENDPOINT: HISTÓRICO DO USUÁRIO
-// -------------------------------------------------------
+// =======================================================
+// 📜 TRANSACTION HISTORY
+// =======================================================
 app.get("/transactions/:userId", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit || 20);
@@ -267,16 +314,81 @@ app.get("/transactions/:userId", async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// 🌐 ROOT ENDPOINT
-// -------------------------------------------------------
-app.get("/", (req, res) => {
-  res.send("🌍 TravelMundo API v3.9.2 — online");
+// =======================================================
+// 🚀 NOVO ENDPOINT: /sessions/generate
+// =======================================================
+app.post("/sessions/generate", async (req, res) => {
+  try {
+    const { userId, module, destination, creditsCost = 1, metadata } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId é obrigatório" });
+    }
+
+    // 1️⃣ Garante usuário criado + créditos iniciais
+    await ensureUserInitialized(userId);
+
+    const userRef = db.collection("users").doc(userId);
+    const snap = await userRef.get();
+    const data = snap.data();
+
+    if (!data) {
+      return res
+        .status(404)
+        .json({ error: "Usuário não encontrado após inicialização." });
+    }
+
+    // 2️⃣ Verifica saldo
+    if (data.credits < creditsCost) {
+      return res.status(403).json({
+        error: "Saldo insuficiente",
+        credits: data.credits,
+      });
+    }
+
+    // 3️⃣ Debita créditos
+    await db.collection("transactions").add({
+      userId,
+      type: "debit",
+      amount: creditsCost,
+      source: "generation",
+      module: module || "unknown",
+      destination: destination || "unknown",
+      metadata: metadata || {},
+      timestamp: new Date(),
+    });
+
+    await userRef.update({
+      credits: admin.firestore.FieldValue.increment(-creditsCost),
+      updatedAt: new Date(),
+    });
+
+    const updated = await userRef.get();
+
+    // 4️⃣ Retorno
+    return res.json({
+      ok: true,
+      message: "Crédito debitado com sucesso",
+      remainingCredits: updated.data().credits,
+      module,
+      destination,
+    });
+  } catch (err) {
+    console.error("🔥 Erro em /sessions/generate:", err);
+    return res.status(500).json({ error: "Erro interno no servidor" });
+  }
 });
 
-// -------------------------------------------------------
+// =======================================================
+// 🌐 ROOT
+// =======================================================
+app.get("/", (req, res) => {
+  res.send("🌍 TravelMundo API v3.9.9 — online");
+});
+
+// =======================================================
 // 🚀 START
-// -------------------------------------------------------
+// =======================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(chalk.blue(`🚀 Servidor ativo na porta ${PORT}`));
