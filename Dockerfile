@@ -1,39 +1,40 @@
-# ============================================================
-# 🌍 TravelMundo IA - Dockerfile (v3.1.7)
-# 🔧 Build otimizado p/ Cloud Build + Cloud Run
-# ============================================================
+# ---------------------------------------------------------
+# 🌍 TravelMundo API - Dockerfile v3.8.0
+# Build otimizado para Cloud Run (Node 20 + segurança)
+# ---------------------------------------------------------
 
-# 🏗️ Etapa 1: Build de dependências
+# Etapa 1: Build base
 FROM node:20-alpine AS builder
 
+# Define diretório de trabalho
 WORKDIR /app
 
-# Copia apenas os arquivos de dependência (melhora cache)
+# Copia arquivos de dependências
 COPY package*.json ./
 
-# Instala dependências (sem pacotes de dev)
+# Instala dependências (sem as dev)
 RUN npm install --omit=dev
 
-# Copia o restante da aplicação
+# Copia o resto do projeto
 COPY . .
 
-# ============================================================
-# 🧩 Etapa 2: Runtime leve e seguro
-# ============================================================
+# ---------------------------------------------------------
+# Etapa 2: Execução no ambiente de produção
+# ---------------------------------------------------------
 FROM node:20-alpine
 
+# Diretório de trabalho final
 WORKDIR /app
 
-# Copia somente o conteúdo necessário da etapa anterior
+# Copia o resultado do builder
 COPY --from=builder /app ./
 
-# Define variáveis de ambiente padrão
+# Define variáveis padrão
 ENV NODE_ENV=production
 ENV PORT=8080
 
-# Cloud Run usa essa porta automaticamente
+# Expõe a porta padrão do Cloud Run
 EXPOSE 8080
 
-# 🏁 Comando de inicialização
+# Comando para iniciar a API
 CMD ["npm", "start"]
-

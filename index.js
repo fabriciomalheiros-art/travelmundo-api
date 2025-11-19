@@ -1,6 +1,6 @@
 // 🌍 TravelMundo API — v3.9.2 (Stable)
 // -------------------------------------------------------
-// Recursos principais:
+// Recursos principaiss:
 // ✅ Inicialização inteligente do Firebase (Base64 ou Arquivo)
 // ✅ Diagnóstico avançado do ambiente (/debug-env)
 // ✅ Endpoints de crédito: buy-credits, consume-credit, credits, transactions
